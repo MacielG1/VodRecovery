@@ -10,20 +10,20 @@
     "8) Exit": "Exits the application."
   },
   "VOD_MODE_MENU": {
-    "1) Website Video Recovery": "Recovers videos by scraping websites to retrieve stream information.",
+    "1) Website Video Recovery": "Recovers videos by retrieving stream data from websites.",
     "2) Manual Video Recovery": "Recovers videos using manual input of stream information.",
     "4) Bulk VOD Recovery from SullyGnome CSV Export": "Recovers all available videos based on a CSV file of streams exported from SullyGnome.",
     "4) Return": "Returns to main menu."
   },
   "CLIP_TYPE_MENU": {
-    "1) Recover All Clips from a single video": "Recovers all clips from a single video.",
-    "2) Find Random Clips from a single video": "Recovers a random set of clips from a single video.",
+    "1) Recover All Clips from a VOD": "Recovers all clips from a single video.",
+    "2) Find Random Clips from a VOD": "Recovers a random set of clips from a single video.",
     "3) Donwload Clip from Twitch URL": "Downloads clips from a Twitch URL that are still available on Twitch.",
     "4) Bulk Recover Clips from SullyGnome CSV Export": "Recovers all clips based on a CSV file of streams exported from SullyGnome.",
     "5) Return": "Returns to main menu."
   },
   "CLIP_RECOVERY_MENU": {
-    "1) Website-Based Clip Recovery": "Recovers clips by scraping websites to retrieve stream data.",
+    "1) Website-Based Clip Recovery": "Recovers clips by retrieving stream data from websites.",
     "2) Manual Clip Recovery": "Recovers clips using manual input of stream information.",
     "3) Return": "Returns to main menu."
   },
