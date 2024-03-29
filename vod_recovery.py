@@ -1568,7 +1568,7 @@ def download_m3u8_video_url(m3u8_link, output_filename):
         '-y',
         os.path.join(get_default_directory(), output_filename),
     ]
-    subprocess.run(command, shell=True, check=True)
+    subprocess.run(' '.join(command), shell=True, check=True)
 
 
 def download_m3u8_video_url_slice(m3u8_link, output_filename, video_start_time, video_end_time):
@@ -1583,7 +1583,7 @@ def download_m3u8_video_url_slice(m3u8_link, output_filename, video_start_time, 
         os.path.join(get_default_directory(), output_filename),
 
     ]
-    subprocess.run(command, shell=True, check=True)
+    subprocess.run(' '.join(command), shell=True, check=True)
 
 
 def download_m3u8_video_file(m3u8_file_path, output_filename):
@@ -1595,7 +1595,7 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
         # '-bsf:a', 'aac_adtstoasc',
         os.path.join(get_default_directory(), output_filename),
     ]
-    subprocess.run(command, shell=True, check=True)
+    subprocess.run(' '.join(command), shell=True, check=True)
 
 def download_m3u8_video_file_slice(m3u8_file_path, output_filename, video_start_time, video_end_time):
     command = [
@@ -1609,7 +1609,7 @@ def download_m3u8_video_file_slice(m3u8_file_path, output_filename, video_start_
         '-y',
         os.path.join(get_default_directory(), output_filename),
     ]
-    subprocess.run(command, shell=True, check=True)
+    subprocess.run(' '.join(command), shell=True, check=True)
 
 
 def get_VLC_Location():
