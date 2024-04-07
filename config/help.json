@@ -16,7 +16,7 @@
   "CLIP_TYPE_MENU": {
     "1) Recover All Clips from a VOD": "Recovers all clips from a single video.",
     "2) Find Random Clips from a VOD": "Recovers a random set of clips from a single video.",
-    "3) Donwload Clip from Twitch URL": "Downloads clips from a Twitch URL that are still available on Twitch.",
+    "3) Download Clip from Twitch URL": "Downloads clips from a Twitch URL that are still available on Twitch.",
     "4) Bulk Recover Clips from SullyGnome CSV Export": "Recovers all clips based on a CSV file of streams exported from SullyGnome.",
     "5) Return": "Returns to main menu."
   },
