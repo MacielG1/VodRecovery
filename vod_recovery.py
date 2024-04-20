@@ -24,7 +24,7 @@ import ffmpeg_downloader as ffdl
 import unicodedata
 
 
-CURRENT_VERSION = "1.2.3"
+CURRENT_VERSION = "1.2.4"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 
 
