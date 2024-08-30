@@ -24,7 +24,7 @@ from packaging import version
 import ffmpeg_downloader as ffdl
 
 
-CURRENT_VERSION = "1.2.13"
+CURRENT_VERSION = "1.2.14"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 
 
