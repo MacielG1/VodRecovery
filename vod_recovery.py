@@ -54,11 +54,11 @@ def get_default_directory():
 
 
 def print_main_menu():
-    default_video_format = get_default_video_format() or ".mp4"
+    default_video_format = get_default_video_format() or "mp4"
     menu_options = [
         "1) VOD Recovery",
         "2) Clip Recovery",
-        f"3) Download VOD ({default_video_format})",
+        f"3) Download VOD ({default_video_format.lstrip('.')})",
         "4) Unmute & Check M3U8 Availability",
         "5) Options",
         "6) Exit"
@@ -72,7 +72,6 @@ def print_main_menu():
             return choice
         except ValueError:
             print("\n✖  Invalid option! Please try again:\n")
-#
 
 def print_video_mode_menu():
     vod_type_options = [
@@ -213,10 +212,10 @@ def print_handle_m3u8_availability_menu():
 def print_options_menu():
 
     options_menu = [
-        f"1) Set Default Video Format \033[94m({get_default_video_format() or '.mp4'})\033[0m",
+        f"1) Set Default Video Format \033[94m({get_default_video_format().lstrip(".") or 'mp4'})\033[0m",
         f"2) Set Download Directory \033[94m({get_default_directory() or '~/Downloads/'})\033[0m",
         "3) Check for Updates",
-        "4) Open settings.json file",
+        "4) Open settings.json File",
         "5) Help",
         "6) Return"
     ]
@@ -515,7 +514,7 @@ def set_default_video_format():
     print("\nSelect the default video format")
 
     for i, format_option in enumerate(SUPPORTED_FORMATS, start=1):
-        print(f"{i}) {format_option}")
+        print(f"{i}) {format_option.lstrip('.')}")
 
     user_option = str(input("\nChoose a video format: "))
     if user_option in [str(i) for i in range(1, len(SUPPORTED_FORMATS) + 1)]:
@@ -535,7 +534,7 @@ def set_default_video_format():
             with open(config_file_path, 'w', encoding="utf-8") as config_file:
                 json.dump(config_data, config_file, indent=4)
 
-            print(f"\n\033[92m\u2713  Default video format set to: {selected_format}\033[0m")
+            print(f"\n\033[92m\u2713  Default video format set to: {selected_format.lstrip('.')}\033[0m")
 
         except (FileNotFoundError, json.JSONDecodeError) as error:
             print(f"Error: {error}")
@@ -789,7 +788,7 @@ def handle_vod_recover(url, url_parser, datetime_parser, website_name):
     m3u8_duration = return_m3u8_duration(m3u8_link)
 
     if source_duration and int(source_duration) >= m3u8_duration + 10:
-        print(f"The duration from {website_name} exceeds the M3U8 duration by at least 10 seconds. This may indicate a split stream.\n")
+        print(f"The duration from {website_name} exceeds the M3U8 duration. This may indicate a split stream, try checking Streamscharts for another URL.")
     return m3u8_source, stream_datetime
 
 
@@ -869,8 +868,6 @@ async def get_vod_urls(streamer_name, video_id, start_timestamp):
     if not successful_url:
         print("\nNo successful URL found!")
     return successful_url
-
-
 
 
 def return_supported_qualities(m3u8_link):
@@ -983,7 +980,7 @@ def parse_duration_streamscharts(streamscharts_url):
         print("Opening Streamcharts with browser...")
         with SB(uc=True) as sb:
 
-            sb.uc_open_with_reconnect(streamscharts_url, reconnect_time=2)
+            sb.uc_open_with_reconnect(streamscharts_url, reconnect_time=3)
             handle_cloudflare(sb)
             bs = BeautifulSoup(sb.driver.page_source, 'html.parser')
             return parse_streamscharts_duration_data(bs)
@@ -1023,7 +1020,7 @@ def parse_duration_twitchtracker(twitchtracker_url, try_alternative=True):
         print("Opening Twitchtracker with browser...")
         with SB(uc=True) as sb:
 
-            sb.uc_open_with_reconnect(twitchtracker_url, reconnect_time=2)
+            sb.uc_open_with_reconnect(twitchtracker_url, reconnect_time=3)
             handle_cloudflare(sb)
             bs = BeautifulSoup(sb.driver.page_source, 'html.parser')
             return parse_twitchtracker_duration_data(bs)
@@ -1064,7 +1061,7 @@ def parse_duration_sullygnome(sullygnome_url):
         print("Opening Sullygnome with browser...")
         with SB(uc=True) as sb:
 
-            sb.uc_open_with_reconnect(sullygnome_url, reconnect_time=2)
+            sb.uc_open_with_reconnect(sullygnome_url, reconnect_time=3)
             handle_cloudflare(sb)
             bs = BeautifulSoup(sb.driver.page_source, 'html.parser')
             return parse_sullygnome_duration_data(bs)
@@ -1114,7 +1111,7 @@ def parse_datetime_streamscharts(streamscharts_url):
        
         with SB(uc=True) as sb:
 
-            sb.uc_open_with_reconnect(streamscharts_url, reconnect_time=2)
+            sb.uc_open_with_reconnect(streamscharts_url, reconnect_time=3)
             handle_cloudflare(sb)
             bs = BeautifulSoup(sb.driver.page_source, 'html.parser')
 
@@ -1158,7 +1155,7 @@ def parse_datetime_twitchtracker(twitchtracker_url):
         print("Opening Twitchtracker with browser...")
         with SB(uc=True) as sb:
 
-            sb.uc_open_with_reconnect(twitchtracker_url, reconnect_time=2)
+            sb.uc_open_with_reconnect(twitchtracker_url, reconnect_time=3)
             handle_cloudflare(sb)
 
             bs = BeautifulSoup(sb.driver.page_source, 'html.parser')
@@ -1216,7 +1213,7 @@ def parse_datetime_sullygnome(sullygnome_url):
         print("Opening Sullygnome with browser...")
         with SB(uc=True) as sb:
 
-            sb.uc_open_with_reconnect(sullygnome_url, reconnect_time=2)
+            sb.uc_open_with_reconnect(sullygnome_url, reconnect_time=3)
             handle_cloudflare(sb)
             bs = BeautifulSoup(sb.driver.page_source, 'html.parser')
             return parse_sullygnome_datetime_data(bs)
