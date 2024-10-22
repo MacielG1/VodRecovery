@@ -1840,8 +1840,7 @@ def download_m3u8_video_url(m3u8_link, output_filename):
             get_ffmpeg_path(), 
             "-i", m3u8_link, 
             "-hide_banner",
-            "-c", "copy", 
-            "-f", get_default_video_format().lstrip("."),
+            "-c", "copy",
             "-y", output_path
         ]
     else:
@@ -1885,7 +1884,6 @@ def download_m3u8_video_url_slice(m3u8_link, output_filename, video_start_time, 
             "-to", video_end_time, 
             "-i", m3u8_link,
             "-c", "copy",
-            "-f", get_default_video_format().lstrip("."),
             "-y", output_path,
         ]
     elif downloader == "yt-dlp":
@@ -1930,7 +1928,6 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
             "-ignore_unknown",
             "-i", m3u8_file_path,
             "-c", "copy",
-            "-f", get_default_video_format().lstrip("."),
             "-y", output_path,
         ]
 
@@ -1988,7 +1985,6 @@ def download_m3u8_video_file_slice(m3u8_file_path, output_filename, video_start_
         "-to", video_end_time, 
         "-i", m3u8_file_path,
         "-c", "copy",
-        "-f", get_default_video_format().lstrip("."),
         "-y", output_path,
     ]
 
