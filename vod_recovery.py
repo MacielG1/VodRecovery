@@ -29,7 +29,7 @@ import importlib.metadata
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.3.18"
+CURRENT_VERSION = "1.3.19"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "1440p60", "1440p30", "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -1177,7 +1177,7 @@ async def get_vod_urls(streamer_name, video_id, start_timestamp):
 
     m3u8_link_list = [
         f"{domain.strip()}{str(hashlib.sha1(f'{streamer_name}_{video_id}_{int(calculate_epoch_timestamp(start_timestamp, seconds))}'.encode('utf-8')).hexdigest())[:20]}_{streamer_name}_{video_id}_{int(calculate_epoch_timestamp(start_timestamp, seconds))}/{quality}/index-dvr.m3u8"
-        for seconds in range(60)
+        for seconds in range(-30, 60)
         for domain in domains if domain.strip()
         for quality in qualities
     ]
