@@ -25,11 +25,14 @@ from tqdm import tqdm
 from ffmpeg_progress_yield import FfmpegProgress
 import logging
 import importlib.metadata
+import tempfile
+import zipfile
+import shutil
 
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.3.19"
+CURRENT_VERSION = "1.4.0"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "1440p60", "1440p30", "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -113,10 +116,11 @@ def print_main_menu():
         "1) VOD Recovery",
         "2) Clip Recovery",
         f"3) Download VOD ({default_video_format.lstrip('.')})",
-        "4) Search Recent Streams",
-        "5) Extra M3U8 Options",
-        "6) Options",
-        "7) Exit",
+        "4) Download Live Stream",
+        "5) Search Recent Streams",
+        "6) Extra M3U8 Options",
+        "7) Options",
+        "8) Exit",
     ]
     while True:
         print("\n".join(menu_options))
@@ -262,7 +266,7 @@ def print_handle_m3u8_availability_menu():
         "1) Check if M3U8 file has muted segments",
         "2) Unmute & Remove invalid segments",
         "3) Write M3U8 to file",
-        "3) Return",
+        "4) Return",
     ]
     while True:
         print("\n".join(handle_m3u8_availability_options))
@@ -336,6 +340,23 @@ def print_get_twitch_url_menu():
     return print_get_twitch_url_menu()
 
 
+def print_get_twitch_url_or_name_menu():
+    user_input = input("Enter Twitch URL or streamer name: ").strip(" \"'")
+    
+    if "twitch.tv" in user_input:
+        return user_input
+    
+    if user_input and not user_input.startswith("http"):
+        streamer_name = user_input.lstrip("@")
+        return f"https://www.twitch.tv/{streamer_name}"
+    
+    if user_input.startswith("http"):
+        return user_input
+    
+    print("\n✖  Invalid input! Please try again:\n")
+    return print_get_twitch_url_or_name_menu()
+
+
 def get_twitch_or_tracker_url():
     while True:
         url = input("Enter Twitchtracker/Streamscharts/Sullygnome/Twitch URL: ").strip()
@@ -361,6 +382,182 @@ def get_latest_version(retries=3):
                 continue 
             else:
                 return None
+
+
+def get_latest_release_info(retries=3):
+    for attempt in range(retries):
+        try:
+            response = requests.get("https://api.github.com/repos/MacielG1/VodRecovery/releases/latest", timeout=30)
+            if response.status_code == 200:
+                return response.json()
+            return None
+        except Exception:
+            if attempt < retries - 1:
+                sleep(3)
+                continue
+            return None
+
+
+def get_latest_release_zip_url():
+    release_info = get_latest_release_info()
+    if not release_info:
+        return None
+    try:
+        assets = release_info.get("assets") or []
+        for asset in assets:
+            name = (asset.get("name") or "").lower()
+            url = asset.get("browser_download_url")
+            if name.endswith(".zip") and url:
+                return url
+        if release_info.get("zipball_url"):
+            return release_info["zipball_url"]
+    except Exception:
+        pass
+    return "https://github.com/MacielG1/VodRecovery/archive/refs/heads/main.zip"
+
+
+def enumerate_zip_top_folder(zip_path):
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            names = zip_ref.namelist()
+            if not names:
+                return None
+            root = names[0].split('/')[0]
+            return root
+    except Exception:
+        return None
+
+
+def copy_tree_overwrite(source_dir, destination_dir, preserve_relative_paths=None, ignore_dirs=None, ignore_files=None):
+    preserve_relative_paths = preserve_relative_paths or set()
+    ignore_dirs = ignore_dirs or {"__pycache__", ".git", ".github"}
+    ignore_files = ignore_files or set()
+
+    for root_dir, dir_names, file_names in os.walk(source_dir):
+        dir_names[:] = [d for d in dir_names if d not in ignore_dirs]
+
+        relative_root = os.path.relpath(root_dir, source_dir)
+        destination_root = destination_dir if relative_root == "." else os.path.join(destination_dir, relative_root)
+        os.makedirs(destination_root, exist_ok=True)
+
+        for file_name in file_names:
+            relative_path = file_name if relative_root == "." else os.path.join(relative_root, file_name)
+
+            if file_name in ignore_files:
+                continue
+            if relative_path.replace("\\", "/") in preserve_relative_paths:
+                continue
+
+            source_file_path = os.path.join(root_dir, file_name)
+            destination_file_path = os.path.join(destination_root, file_name)
+            try:
+                os.makedirs(os.path.dirname(destination_file_path), exist_ok=True)
+                shutil.copy2(source_file_path, destination_file_path)
+            except Exception:
+                pass
+
+
+def merge_settings_defaults(new_settings_path, user_settings_path):
+    try:
+        if not os.path.exists(user_settings_path):
+            os.makedirs(os.path.dirname(user_settings_path), exist_ok=True)
+            shutil.copy2(new_settings_path, user_settings_path)
+            return True
+
+        with open(user_settings_path, "r", encoding="utf-8") as f_user:
+            user_config = json.load(f_user)
+        with open(new_settings_path, "r", encoding="utf-8") as f_new:
+            new_defaults = json.load(f_new)
+
+        updated = False
+        for key, default_value in new_defaults.items():
+            if key not in user_config:
+                user_config[key] = default_value
+                updated = True
+
+        if updated:
+            with open(user_settings_path, "w", encoding="utf-8") as f_out:
+                json.dump(user_config, f_out, indent=4)
+        return True
+    except Exception:
+        return False
+
+
+def perform_self_update(latest_version_str=None):
+    temp_directory = None
+    try:
+        print("\nPreparing to update...")
+        zip_url = get_latest_release_zip_url()
+        if not zip_url:
+            print("\n✖  Could not resolve latest release URL!")
+            return False
+
+        temp_directory = tempfile.mkdtemp(prefix="vodrecovery_update_")
+        zip_destination_path = os.path.join(temp_directory, "update.zip")
+
+        with requests.get(zip_url, stream=True, timeout=60) as response:
+            response.raise_for_status()
+            total_size = int(response.headers.get('content-length', 0))
+            chunk_size = 1024 * 1024
+            downloaded = 0
+            with open(zip_destination_path, 'wb') as file_out:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        file_out.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size:
+                            percent = (downloaded / total_size) * 100
+                            print(f"\rDownloading update... {percent:.1f}%", end="", flush=True)
+        print("\nDownload complete. Extracting...")
+
+        with zipfile.ZipFile(zip_destination_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_directory)
+
+        # Identify root folder inside extracted content
+        root_folder_name = enumerate_zip_top_folder(zip_destination_path)
+        if root_folder_name is None:
+            candidates = [name for name in os.listdir(temp_directory) if os.path.isdir(os.path.join(temp_directory, name))]
+            if not candidates:
+                print("\n✖  Could not find extracted content!")
+                return False
+            root_folder_name = candidates[0]
+        extracted_root_path = os.path.join(temp_directory, root_folder_name)
+
+        # Copy files over, preserving user settings
+        current_directory = os.path.dirname(os.path.realpath(__file__))
+        preserve_paths = {"config/settings.json"}
+        copy_tree_overwrite(
+            source_dir=extracted_root_path,
+            destination_dir=current_directory,
+            preserve_relative_paths=preserve_paths,
+        )
+
+        # Merge any new default settings keys into user's settings
+        new_settings_path = os.path.join(extracted_root_path, "config", "settings.json")
+        user_settings_path = os.path.join(current_directory, "config", "settings.json")
+        if os.path.exists(new_settings_path):
+            merge_settings_defaults(new_settings_path, user_settings_path)
+
+        try:
+            global CURRENT_VERSION
+            if latest_version_str:
+                CURRENT_VERSION = latest_version_str.lstrip('vV')
+        except Exception:
+            pass
+
+        print("\n\033[92m✓ Update complete.\033[0m")
+        if latest_version_str:
+            print(f"Updated to version {latest_version_str}.")
+        return True
+    except Exception as e:
+        print(f"\n✖  Update failed: {e}")
+        return False
+    finally:
+        try:
+            if temp_directory and os.path.isdir(temp_directory):
+                shutil.rmtree(temp_directory, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def get_latest_streams_from_twitchtracker():
@@ -488,15 +685,54 @@ def get_latest_streams_from_twitchtracker():
 
 
 def check_for_updates():
-    latest_version = version.parse(get_latest_version())
+    latest_tag = get_latest_version()
+    normalized_tag = latest_tag.lstrip('vV') if latest_tag else None
+    try:
+        latest_version = version.parse(normalized_tag) if normalized_tag else None
+    except Exception:
+        latest_version = None
     current_version = version.parse(CURRENT_VERSION)
     if latest_version and current_version:
-        if latest_version != current_version:
-            print(f"\n\033[34mNew version ({latest_version}) - Download at: https://github.com/MacielG1/VodRecovery/releases/latest\033[0m")
-            input("\nPress Enter to continue...")
-            return run_vod_recover()
+        if latest_version > current_version:
+            print(f"\n\033[94mNew version available: {normalized_tag} (current: {CURRENT_VERSION})\033[0m")
+            while True:
+                choice = input("Do you want to download and install it now? (Y/N): ").strip().lower()
+                if choice in {"y", "n"}:
+                    break
+                print("Invalid input. Please enter Y or N.")
+            if choice == "y":
+                ok = perform_self_update(latest_tag)
+                if ok:
+                    try:
+                        script_dir = os.path.dirname(os.path.realpath(__file__))
+                        deps_script = os.path.join(script_dir, "install_dependencies.py")
+                        if os.path.isfile(deps_script):
+                            print("\nUpdating dependencies...")
+                            subprocess.check_call([sys.executable, deps_script])
+                    except Exception as dep_err:
+                        print(f"\nWarning: Could not update dependencies automatically: {dep_err}")
+                    while True:
+                        restart_choice = input("Restart Vod Recovery now? (Y/N): ").strip().lower()
+                        if restart_choice in {"y", "n"}:
+                            break
+                        print("Invalid input. Please enter Y or N.")
+                    if restart_choice == "y":
+                        try:
+                            script_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "vod_recovery.py")
+                            os.execl(sys.executable, sys.executable, script_path)
+                        except Exception:
+                            try:
+                                subprocess.Popen([sys.executable, script_path])
+                            except Exception:
+                                pass
+                            sys.exit(0)
+                input("\nPress Enter to continue...")
+                return run_vod_recover()
+            else:
+                input("\nPress Enter to continue...")
+                return
         else:
-            print(f"\n\033[92m\u2713 Vod Recovery is updated to {CURRENT_VERSION}!\033[0m")
+            print(f"\n\033[92m\u2713 Vod Recovery is up to date ({CURRENT_VERSION}).\033[0m")
             input("\nPress Enter to continue...")
             return
     else:
@@ -1269,19 +1505,19 @@ def return_supported_qualities(m3u8_link):
     user_option = get_user_resolution_choice(m3u8_link, valid_resolutions, found_quality)
     return user_option
 
-def get_user_resolution_choice(m3u8_link, valid_resolutions, found_quality):
-    try:
-        choice = int(input("Choose a quality: "))
-        if 1 <= choice <= len(valid_resolutions):
-            quality = valid_resolutions[choice - 1]
-            user_option = m3u8_link.replace(f"/{found_quality}/", f"/{quality}/")
-            return user_option
 
+def get_user_resolution_choice(m3u8_link, valid_resolutions, found_quality):
+    prompt = f"Choose a quality: "
+    while True:
+        raw = input(prompt).strip()
+        if raw == "":
+            continue
+        if raw.isdigit():
+            choice = int(raw)
+            if 1 <= choice <= len(valid_resolutions):
+                quality = valid_resolutions[choice - 1]
+                return m3u8_link.replace(f"/{found_quality}/", f"/{quality}/")
         print("\n✖  Invalid option! Please try again:\n")
-        return get_user_resolution_choice(m3u8_link, valid_resolutions, found_quality)
-    except ValueError:
-        print("\n✖  Invalid option! Please try again:\n")
-        return get_user_resolution_choice(m3u8_link, valid_resolutions, found_quality)
 
 
 def parse_website_duration(duration_string):
@@ -2100,7 +2336,7 @@ def clip_recover(streamer, video_id, duration):
                 return url, response.status_code
             except Exception:
                 if attempt < max_retries:
-                    time.sleep(0.5)
+                    sleep(0.5)
                 else:
                     return url, None
 
@@ -2151,6 +2387,7 @@ def get_and_validate_csv_filename():
         if bool(re.match(pattern, csv_filename)):
             return file_path
         print("The CSV filename MUST be the original filename that was downloaded from sullygnome!")
+        return run_vod_recover()
     except tk.TclError:
         file_path = input("Enter the full path to the CSV file: ").strip(' "\'')
         while True:
@@ -2229,7 +2466,7 @@ def random_clip_recovery(video_id, hours, minutes):
                 if response.status_code == 200:
                     return url
             except Exception:
-                time.sleep(0.5)
+                sleep(0.5)
         return None
 
     print("Searching...")
@@ -2441,7 +2678,7 @@ def get_yt_dlp_path():
         if (subprocess.run(["yt-dlp", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0):
             return "yt-dlp"
     except Exception:
-        command = ["pip", "install", "yt-dlp", "--upgrade", "--quiet"]
+        command = [sys.executable, "-m", "pip", "install", "yt-dlp", "--upgrade", "--quiet"]
         try:
             subprocess.run(command, check=True)
             print("yt-dlp installed successfully!")
@@ -2475,19 +2712,19 @@ def get_m3u8_duration(m3u8_link):
 
 def handle_progress_bar(command, output_filename, total_duration):
     try:
-        ff = FfmpegProgress(command)
-        with tqdm(total=100, position=0, desc=output_filename, leave=None, colour="green", unit="%", bar_format="{l_bar}{bar}| {percentage:.1f}/100% [{elapsed}]{postfix}") as pbar:
-            for progress in ff.run_command_with_progress():
-                pbar.update(progress - pbar.n)
-                
-                if total_duration is not None:
-                    total_duration_seconds = total_duration
-                    current_duration_seconds = (progress / 100) * total_duration_seconds
-                    current_duration_str = str(timedelta(seconds=int(current_duration_seconds)))
-                    total_duration_str = str(timedelta(seconds=int(total_duration_seconds)))
-                    pbar.set_postfix_str(f"{current_duration_str}/{total_duration_str}")
+        with FfmpegProgress(command) as ff:
+            with tqdm(total=100, position=0, desc=output_filename, leave=None, colour="green", unit="%", bar_format="{l_bar}{bar}| {percentage:.1f}/100% [{elapsed}]{postfix}") as pbar:
+                for progress in ff.run_command_with_progress():
+                    pbar.update(progress - pbar.n)
+                    
+                    if total_duration is not None:
+                        total_duration_seconds = total_duration
+                        current_duration_seconds = (progress / 100) * total_duration_seconds
+                        current_duration_str = str(timedelta(seconds=int(current_duration_seconds)))
+                        total_duration_str = str(timedelta(seconds=int(total_duration_seconds)))
+                        pbar.set_postfix_str(f"{current_duration_str}/{total_duration_str}")
 
-            pbar.close()
+                pbar.close()
         return True
     except Exception as e:
         print(f"Error: {str(e).strip()}")
@@ -2682,6 +2919,62 @@ def download_m3u8_video_file_slice(m3u8_file_path, output_filename, video_start_
             handle_progress_bar(command, output_filename, total_duration)
         else:
             subprocess.run(command, shell=True, check=True)
+        return True
+    except Exception:
+        handle_retry_command(command)
+
+
+def get_twitch_channel_from_url(twitch_url):
+    try:
+        parsed = urlparse(twitch_url)
+        path_parts = [p for p in parsed.path.split("/") if p]
+        if path_parts:
+            return path_parts[0]
+        # Fallback: if user typed just the channel name
+        return twitch_url.strip().split("?")[0]
+    except Exception:
+        return twitch_url
+
+
+def download_twitch_live_from_start():
+    # print("\nTwitch Live Stream Download")
+    twitch_url = print_get_twitch_url_or_name_menu()
+    channel_name = get_twitch_channel_from_url(twitch_url)
+
+    while True:
+        choice = input("\nDownload from the start? (Y/N): ").strip().lower()
+        if choice in ['y', 'yes']:
+            from_start = True
+            break
+        elif choice in ['n', 'no']:
+            from_start = False
+            break
+        print("Invalid input! Please enter 'Y' for Yes or 'N' for No.")
+
+    output_filename = f"{channel_name} - Live - {datetime.now().strftime('%Y-%m-%d %H-%M-%S')}{get_default_video_format()}"
+    if os.name != 'nt':
+        output_filename = quote_filename(output_filename)
+
+    output_path = os.path.normpath(os.path.join(get_default_directory(), output_filename))
+    handle_file_already_exists(output_path)
+
+    yt_dlp_bin = get_yt_dlp_path()
+    
+    command = [yt_dlp_bin, twitch_url, "-o", output_path]
+    
+    if from_start:
+        command.insert(1, "--live-from-start")
+
+    custom_options = get_yt_dlp_custom_options()
+    if custom_options:
+        command.extend(custom_options)
+
+    print("\nCommand: " + " ".join(command) + "\n")
+
+    try:
+        subprocess.run(command, shell=True, check=True)
+        print(f"\n\033[92m✓ Live recording saved to {output_path}\033[0m\n")
+        input("Press Enter to continue...")
         return True
     except Exception:
         handle_retry_command(command)
@@ -3258,8 +3551,10 @@ def run_vod_recover():
             elif download_type == 4:
                 continue
         elif menu == 4:
-            get_latest_streams_from_twitchtracker()
+            download_twitch_live_from_start()
         elif menu == 5:
+            get_latest_streams_from_twitchtracker()
+        elif menu == 6:
             mode = print_handle_m3u8_availability_menu()
             if mode == 1:
                 url = print_get_m3u8_link_menu()
@@ -3286,7 +3581,7 @@ def run_vod_recover():
                 input("\nPress Enter to continue...")
             elif menu == 3:
                 continue
-        elif menu == 6:
+        elif menu == 7:
             while True:
                 print()
                 options_choice = print_options_menu()
@@ -3312,7 +3607,7 @@ def run_vod_recover():
                     input("Press Enter to continue...")
                 elif options_choice == 7:
                     break
-        elif menu == 7:
+        elif menu == 8:
             print("\nExiting...\n")
             sys.exit()
         else:
