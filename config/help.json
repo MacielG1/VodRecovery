@@ -3,10 +3,11 @@
     "1) VOD Recovery": "Recovers M3U8 links based on stream information.",
     "2) Clip Recovery": "Recovers all clips from past broadcasts.",
     "3) Download Vod": "Downloads a Vod or Highlight from a M3U8 link or Twitch URL.",
-    "4) Search Recent Streams": "Finds the 10 most recent streams from the specified streamer",
-    "5) Extras M3U8 Options": "Menu options for handling M3U8 files.",
-    "6) Options": "Menu options for the application.",
-    "7) Exit": "Exits the application."
+    "4) Download Live Stream": "Downloads a live stream (from the beginning or current time)",
+    "5) Search Recent Streams": "Finds the 10 most recent streams from the specified streamer",
+    "6) Extras M3U8 Options": "Menu options for handling M3U8 files.",
+    "7) Options": "Menu options for the application.",
+    "8) Exit": "Exits the application."
   },
   "VOD_MODE_MENU": {
     "1) Website Video Recovery": "Recovers videos by retrieving stream data from websites.",
@@ -41,13 +42,13 @@
     "1) Check if M3U8 file has muted segments": "Checks if the M3U8 file has muted segments.",
     "2) Unmute & Remove invalid segments": "Unmutes the M3U8 file and removes any invalid segments.",
     "3) Write M3U8 to file": "Writes the M3U8 file to the default directory.",
-    "3) Return": "Returns to main menu."
+    "4) Return": "Returns to main menu."
   },
   "DOWNLOAD_TYPE_MENU": {
     "1) From M3U8 Link": "Downloads from a M3U8 link.",
     "2) From M3U8 File": "Downloads from a M3U8 file.",
     "3) From Twitch URL": "Downloads VODs or Highlights from a Twitch URL (Only if still available on Twitch).",
-    "4) Return": "Returns to main menu."
+    "5) Return": "Returns to main menu."
   },
   "OPTIONS_MENU":{
     "1) Set Default Video Format": "Sets which video format to use for vods and clips downloaded.",

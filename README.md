@@ -16,6 +16,7 @@
 - Video & Clip Recovery: Find VODs and clips using the listed websites or by manually inputting the values, including sub-only vods.
 - Video Format: Recovered VODs and highlights can be downloaded in various formats such as MP4, MKV, AVI, MOV and TS.
 - Download Highlights: Retrieve highlights and VODs using a direct Twitch URL.
+- Download Live Streams: Download a live stream from a Twitch URL.
 - Multiple Formats: Recovered M3U8 links are available in these formats: Chunked (Source Quality), 1440p60, 1440p30, 1080p60, 1080p30, etc.
 - Platform Compatibility: Compatible with popular platforms such as [TwitchTracker](https://twitchtracker.com/), [Sullygnome](https://sullygnome.com/), and [Streamscharts](https://streamscharts.com/) and also direct Twitch links.
 - Bulk Video & Clip Recovery: Recovers multiple VODs and Clips using CSV files from [Sullygnome](https://sullygnome.com/).
@@ -34,10 +35,11 @@ This is the interactive menu:
 1) VOD Recovery
 2) Clip Recovery
 3) Download VOD (default mp4)
-4) Search Recent Streams
-5) Extra M3U8 Options
-6) Options
-7) Exit
+4) Download Live Stream
+5) Search Recent Streams
+6) Extra M3U8 Options
+7) Options
+8) Exit
 ```
 
 ## Notes
