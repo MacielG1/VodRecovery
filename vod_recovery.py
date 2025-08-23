@@ -32,7 +32,7 @@ import shutil
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.4.0"
+CURRENT_VERSION = "1.4.1"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "1440p60", "1440p30", "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -835,18 +835,20 @@ def write_m3u8_to_file(m3u8_link, destination_path, max_retries=5):
     attempt = 0
     while attempt < max_retries:
         try:
-            response = requests.get(m3u8_link, timeout=10)
-            response.raise_for_status()
-
             with open(destination_path, "w", encoding="utf-8") as m3u8_file:
-                m3u8_file.write(response.text)
-
+                m3u8_file.write(requests.get(m3u8_link, timeout=30).text)
             return m3u8_file
-
         except Exception:
             attempt += 1
             sleep(1)
     raise Exception(f"Failed to write M3U8 after {max_retries} attempts.")
+
+
+def ensure_absolute_uri(uri: str, base_link: str) -> str:
+    uri = uri.strip()
+    if uri.startswith("http://") or uri.startswith("https://"):
+        return uri
+    return f"{base_link}{uri}"
 
 
 def read_csv_file(csv_file_path):
@@ -905,7 +907,7 @@ def calculate_days_since_broadcast(start_timestamp):
 
 
 def is_video_muted(m3u8_link):
-    response = requests.get(m3u8_link, timeout=10).text
+    response = requests.get(m3u8_link, timeout=20).text
     return bool("unmuted" in response)
 
 
@@ -1372,35 +1374,28 @@ def get_all_clip_urls(clip_format_dict, clip_format_list):
     return combined_clip_format_list
 
 
-async def fetch_status(session, url, retries=3, timeout=10):
+async def fetch_status(session, url, retries=5, timeout=30):
     for attempt in range(retries):
         try:
             async with session.get(url, timeout=timeout) as response:
                 if response.status == 200:
-                    # For m3u8 files, check for the header
                     if url.endswith('.m3u8'):
                         data = await response.text()
                         if data and "#EXTM3U" in data:
                             return url
-                    # For TS files, just check status code
                     elif url.endswith('.ts'):
                         return url
-                    # For other files, at least check if there's content
                     else:
                         data = await response.read()
                         if data:
                             return url
-                return None
-        except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionResetError) as e:
+        except asyncio.TimeoutError:
             if attempt == retries - 1:
-                continue
-            await asyncio.sleep(1)
-            continue
+                print(f"\nTimeout on final attempt for {url}")
         except Exception as e:
-            if attempt == retries - 1:
-                continue
+            pass
+        if attempt != retries - 1:
             await asyncio.sleep(1)
-            continue
     return None
 
 
@@ -1475,7 +1470,7 @@ def return_supported_qualities(m3u8_link):
     def check_quality(resolution):
         url = m3u8_link.replace(f"/{found_quality}/", f"/{resolution}/")
         try:
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=20)
             if response.status_code == 200:
                 return resolution
         except Exception:
@@ -1963,24 +1958,40 @@ def unmute_vod(m3u8_link):
     with open(video_filepath, "r+", encoding="utf-8") as video_file:
         file_contents = video_file.readlines()
         video_file.seek(0)
-        
+
         is_muted = is_video_muted(m3u8_link)
         base_link = m3u8_link.replace("index-dvr.m3u8", "")
-        counter = 0
-        
-        for segment in file_contents:
-            if segment.startswith("#"):
-                video_file.write(segment)
-            else:
-                if is_muted:
-                    if "-unmuted" in segment:
-                        video_file.write(f"{base_link}{counter}-muted.ts\n")
-                    else:
-                        video_file.write(f"{base_link}{counter}.ts\n")
-                else:
-                    video_file.write(f"{base_link}{counter}.ts\n")
-                counter += 1
-        
+
+        for line in file_contents:
+            if line.startswith("#"):
+                if line.startswith("#EXT-X-MAP") and "URI=" in line:
+                    try:
+                        prefix, uri_part = line.split("URI=", 1)
+                        if uri_part.startswith('"'):
+                            end_quote = uri_part.find('"', 1)
+                            raw_uri = uri_part[1:end_quote]
+                            absolute_uri = ensure_absolute_uri(raw_uri, base_link)
+                            line = f"{prefix}URI=\"{absolute_uri}\"\n"
+                        else:
+                            raw_uri = uri_part.strip().split(",")[0]
+                            absolute_uri = ensure_absolute_uri(raw_uri, base_link)
+                            line = f"#EXT-X-MAP:URI=\"{absolute_uri}\"\n"
+                    except Exception:
+                        pass
+                video_file.write(line)
+                continue
+
+            segment_uri = line.strip()
+            if not segment_uri:
+                video_file.write(line)
+                continue
+
+            if "-unmuted" in segment_uri:
+                segment_uri = segment_uri.replace("-unmuted", "-muted")
+            absolute_segment = ensure_absolute_uri(segment_uri, base_link)
+
+            video_file.write(f"{absolute_segment}\n")
+
         video_file.truncate()
     
     if is_muted:
@@ -2036,7 +2047,7 @@ def check_if_unmuted_is_playable(m3u8_source):
     result = subprocess.run(ffprobe_command, shell=True, check=False, capture_output=True, text=True)
     output = result.stderr
     if "Error" in output:
-        # print("Video is not playable after unmuting, using original m3u8 instead\n")
+        print("Video is not playable after unmuting, using original m3u8 instead\n")
         return False
     else:
         return True
@@ -2074,25 +2085,39 @@ def get_all_playlist_segments(m3u8_link):
 
     segment_list = []
     base_link = m3u8_link.replace("index-dvr.m3u8", "")
-    counter = 0
     
     with open(video_file_path, "r+", encoding="utf-8") as video_file:
         file_contents = video_file.readlines()
         video_file.seek(0)
-        
-        for segment in file_contents:
-            if segment.startswith("#"):
-                video_file.write(segment)
-            else:
-                if "-unmuted" in segment:
-                    new_segment = f"{base_link}{counter}-muted.ts"
-                else:
-                    new_segment = f"{base_link}{counter}.ts"
-                
-                video_file.write(f"{new_segment}\n")
-                segment_list.append(new_segment)
-                counter += 1
-        
+
+        for line in file_contents:
+            if line.startswith("#"):
+                if line.startswith("#EXT-X-MAP") and "URI=" in line:
+                    try:
+                        prefix, uri_part = line.split("URI=", 1)
+                        if uri_part.startswith('"'):
+                            end_quote = uri_part.find('"', 1)
+                            raw_uri = uri_part[1:end_quote]
+                            absolute_uri = ensure_absolute_uri(raw_uri, base_link)
+                            line = f"{prefix}URI=\"{absolute_uri}\"\n"
+                        else:
+                            raw_uri = uri_part.strip().split(",")[0]
+                            absolute_uri = ensure_absolute_uri(raw_uri, base_link)
+                            line = f"#EXT-X-MAP:URI=\"{absolute_uri}\"\n"
+                    except Exception:
+                        pass
+                video_file.write(line)
+                continue
+
+            segment_uri = line.strip()
+            if not segment_uri:
+                video_file.write(line)
+                continue
+
+            absolute_segment = ensure_absolute_uri(segment_uri, base_link)
+            video_file.write(f"{absolute_segment}\n")
+            segment_list.append(absolute_segment)
+
         video_file.truncate()
     return segment_list
 
@@ -2102,7 +2127,7 @@ async def validate_playlist_segments(segments):
     all_segments = [url.strip() for url in segments]
     available_segment_count = 0
     
-    batch_size = 200
+    batch_size = 250
     
     connector = aiohttp.TCPConnector(
         limit=150,
@@ -2120,7 +2145,7 @@ async def validate_playlist_segments(segments):
                 tasks = []
                 
                 for url in batch:
-                    task = asyncio.create_task(fetch_status(session, url, retries=1, timeout=15))
+                    task = asyncio.create_task(fetch_status(session, url, retries=3, timeout=30))
                     tasks.append(task)
                 
                 try:
@@ -2136,7 +2161,7 @@ async def validate_playlist_segments(segments):
                     print(f"\nError processing batch: {str(e)}")
                     continue
                 
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.5)
     
     except Exception as e:
         print(f"\nError during segment validation: {str(e)}")
@@ -2332,7 +2357,7 @@ def clip_recover(streamer, video_id, duration):
     def check_url(url):
         for attempt in range(1, max_retries + 1):
             try:
-                response = request_session.head(url, timeout=10)
+                response = request_session.head(url, timeout=20)
                 return url, response.status_code
             except Exception:
                 if attempt < max_retries:
@@ -2462,7 +2487,7 @@ def random_clip_recovery(video_id, hours, minutes):
     def check_url(url):
         for _ in range(max_retries):
             try:
-                response = request_session.head(url, timeout=10)
+                response = request_session.head(url, timeout=20)
                 if response.status_code == 200:
                     return url
             except Exception:
@@ -2804,7 +2829,7 @@ def download_m3u8_video_url_slice(m3u8_link, output_filename, video_start_time, 
         
         command = [
             get_ffmpeg_path(),
-            "-protocol_whitelist", "file,http,https,tcp,tls",
+            "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
             "-hide_banner",
             "-ss", video_start_time,
             "-to", video_end_time, 
@@ -2848,7 +2873,7 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
     if downloader == "ffmpeg":
         command = [
             get_ffmpeg_path(),
-            "-protocol_whitelist", "file,http,https,tcp,tls",
+            "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
             "-hide_banner",
             "-ignore_unknown",
             "-i", m3u8_file_path,
@@ -2900,7 +2925,7 @@ def download_m3u8_video_file_slice(m3u8_file_path, output_filename, video_start_
 
     command = [
         get_ffmpeg_path(),
-        "-protocol_whitelist", "file,http,https,tcp,tls",
+        "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
         "-hide_banner",
         "-ignore_unknown",
         "-ss", video_start_time,
