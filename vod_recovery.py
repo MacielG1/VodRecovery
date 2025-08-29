@@ -9,9 +9,9 @@ import tkinter as tk
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import sleep, time
-from shutil import rmtree, copyfileobj
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from tkinter import filedialog
+import shutil
 from urllib.parse import urlparse
 from unicodedata import normalize
 import asyncio
@@ -27,17 +27,23 @@ import logging
 import importlib.metadata
 import tempfile
 import zipfile
-import shutil
+
 
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.4.1"
+CURRENT_VERSION = "1.5.0"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
-RESOLUTIONS = ["chunked", "1440p60", "1440p30", "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
+RESOLUTIONS = ["chunked", "2160p60", "2160p30", "1440p60", "1440p30", "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
 if sys.platform == 'win32':
-	asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+class ReturnToMain(Exception):
+    pass
+
+def return_to_main_menu():
+    raise ReturnToMain()
 
 
 def read_config_by_key(config_file, key):
@@ -116,7 +122,7 @@ def print_main_menu():
         "1) VOD Recovery",
         "2) Clip Recovery",
         f"3) Download VOD ({default_video_format.lstrip('.')})",
-        "4) Download Live Stream",
+        "4) Record Live Stream",
         "5) Search Recent Streams",
         "6) Extra M3U8 Options",
         "7) Options",
@@ -145,23 +151,6 @@ def print_video_mode_menu():
         try:
             choice = int(input("\nSelect VOD Recovery Type: "))
             if choice not in range(1, len(vod_type_options) + 1):
-                raise ValueError("Invalid option")
-            return choice
-        except ValueError:
-            print("\n✖  Invalid option! Please try again:\n")
-
-
-def print_video_recovery_menu():
-    vod_recovery_options = [
-        "1) Website Video Recovery",
-        "2) Manual Recovery",
-        "3) Return",
-    ]
-    while True:
-        print("\n".join(vod_recovery_options))
-        try:
-            choice = int(input("\nSelect VOD Recovery Method: "))
-            if choice not in range(1, len(vod_recovery_options) + 1):
                 raise ValueError("Invalid option")
             return choice
         except ValueError:
@@ -234,7 +223,7 @@ def print_clip_format_menu():
         try:
             choice = int(input("\nSelect Clip URL Format: "))
             if choice == 4:
-                return run_vod_recover()
+                return_to_main_menu()
             if choice not in range(1, len(clip_format_options) + 1):
                 raise ValueError("Invalid option")
             else:
@@ -247,7 +236,7 @@ def print_download_type_menu():
     download_type_options = [
         "1) From M3U8 Link",
         "2) From M3U8 File",
-        "3) From Twitch URL (Only for VODs or Highlights still up on Twitch)",
+        "3) From Twitch URL",
         "4) Return",
     ]
     while True:
@@ -301,11 +290,12 @@ def print_options_menu():
 
 
 def print_get_m3u8_link_menu():
-    m3u8_url = input("Enter M3U8 Link: ").strip(" \"'")
-    if m3u8_url.endswith(".m3u8"):
-        return m3u8_url
-    print("\n✖  Invalid M3U8 link! Please try again:\n")
-    return print_get_m3u8_link_menu()
+    while True:
+        m3u8_url = input("Enter M3U8 Link: ").strip(" \"'")
+        if m3u8_url.endswith(".m3u8"):
+            return m3u8_url
+        else:
+            print("✖  Invalid M3U8 link! Please try again:\n")
 
 
 def quote_filename(filename):
@@ -315,11 +305,13 @@ def quote_filename(filename):
     return filename
 
 
-def ask_to_redownload(output_path):
+def get_yes_no_choice(prompt):
     while True:
-        choice = input(f"\nFile already exists at {output_path}. Do you want to redownload it? (Y/N): ").strip().lower()
-        if choice in ['y', 'n']:
-            return choice == 'y'
+        choice = input(f"\n{prompt} (Y/N): ").strip().lower()
+        if choice in ['y', 'yes']:
+            return True
+        elif choice in ['n', 'no']:
+            return False
         print("Invalid input! Please enter 'Y' for Yes or 'N' for No.")
 
 
@@ -332,16 +324,57 @@ def get_websites_tracker_url():
         print("\n✖  Invalid URL! Please enter a URL from Twitchtracker, Streamscharts, or Sullygnome.\n")
 
 
+def format_iso_datetime(iso_datetime: str):   
+    if not iso_datetime:
+        return None
+    iso_datetime = iso_datetime.strip()
+    try:
+        if iso_datetime.endswith('Z'):
+            dt = datetime.fromisoformat(iso_datetime.replace("Z", "+00:00"))
+        elif '+' in iso_datetime or iso_datetime.endswith(('UTC', 'GMT')):
+            cleaned = iso_datetime.replace('UTC', '').replace('GMT', '').strip()
+            if not cleaned.endswith(('+', '-')):
+                cleaned += '+00:00' if 'UTC' in iso_datetime or 'GMT' in iso_datetime else ''
+            dt = datetime.fromisoformat(cleaned)
+        else:
+            # Assume UTC if no timezone info
+            dt = datetime.fromisoformat(iso_datetime + '+00:00')
+            
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        print(f"Error parsing datetime '{iso_datetime}'")
+        return None
+
+
 def print_get_twitch_url_menu():
-    twitch_url = input("Enter Twitch URL: ").strip(" \"'")
-    if "twitch.tv" in twitch_url:
-        return twitch_url
-    print("\n✖  Invalid Twitch URL! Please try again:\n")
-    return print_get_twitch_url_menu()
+    while True:
+        twitch_url = input("Enter Twitch URL: ").strip(" \"'")
+        if "twitch.tv" in twitch_url:
+            return twitch_url
+        else:
+            print("✖  Invalid Twitch URL! Please try again:\n")
+
+
+def extract_slug_and_streamer_from_clip_url(url):
+    pattern = r"twitch\.tv/([^/]+)/clip/([^/?]+)"
+    match = re.search(pattern, url)
+    if not match:
+        raise ValueError("Invalid Twitch Clip URL")
+    return match.group(1), match.group(2)
+
+
+def print_get_twitch_clip_url_menu():
+    while True:
+        twitch_clip_url = input("Enter Twitch Clip URL: ").strip(" \"'")
+        try:
+            extract_slug_and_streamer_from_clip_url(twitch_clip_url)
+            return twitch_clip_url
+        except ValueError:
+            print("✖  Invalid Twitch Clip URL! Please try again:\n")
 
 
 def print_get_twitch_url_or_name_menu():
-    user_input = input("Enter Twitch URL or streamer name: ").strip(" \"'")
+    user_input = input("Enter Stream URL or streamer name: ").strip(" \"'")
     
     if "twitch.tv" in user_input:
         return user_input
@@ -560,76 +593,220 @@ def perform_self_update(latest_version_str=None):
             pass
 
 
+def fetch_recent_streams(streamer_name, max_streams=100):
+    try:        
+        query = """
+        query($login: String!, $first: Int!) {
+            user(login: $login) {
+                videos(first: $first, type: ARCHIVE) {
+                    edges {
+                        node {
+                            id
+                            title
+                            createdAt
+                            publishedAt
+                            lengthSeconds
+                            previewThumbnailURL
+                            animatedPreviewURL
+                        }
+                    }
+                }
+            }
+        }
+        """
+        
+        variables = {"login": streamer_name, "first": max_streams}
+        payload = {"query": query, "variables": variables}
+        
+        res = requests.post(
+            "https://gql.twitch.tv/gql",
+            json=payload,
+            headers={
+                "Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=30,
+        )
+        
+        
+        if res.status_code != 200:
+            return None
+            
+        data = res.json()
+            
+        if not data or "data" not in data or not data["data"]:
+            return None
+            
+        user_data = data["data"].get("user")
+        
+        if not user_data:
+            return None
+            
+        videos = user_data.get("videos", {}).get("edges", [])
+        streams = []
+        
+        for i, edge in enumerate(videos):
+            node = edge.get("node", {})
+            if not node:
+                continue
+                
+            try:
+                created_at_iso = node.get("createdAt") or node.get("publishedAt")
+                if not created_at_iso:
+                    continue
+                    
+                dt_utc = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
+                dt_utc_str = dt_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+                # Convert to local time only for display purposes
+                dt_local = dt_utc.astimezone()
+                dt_local_str = dt_local.strftime("%d/%b/%Y %H:%M")
+
+                length_seconds = node.get("lengthSeconds", 0)
+                duration_hours = length_seconds / 3600.0
+
+                current_date = datetime.now(dt_utc.tzinfo)
+                old_date = current_date - timedelta(days=60)
+                if dt_utc < old_date:
+                    continue
+
+                preview_url = node.get("previewThumbnailURL", "")
+                animated_url = node.get("animatedPreviewURL", "")
+                extracted_vod_id = None
+                extracted_timestamp = None
+                
+                if preview_url:
+                    try:
+                        url_parts = preview_url.split('/')
+                        for part in url_parts:
+                            if f'_{streamer_name}_' in part:
+                                segments = part.split('_')
+                                if len(segments) >= 4:
+                                    extracted_vod_id = segments[2]
+                                    extracted_timestamp = segments[3]
+                                    break
+                    except Exception as e:
+                        pass
+                
+                if not extracted_vod_id and animated_url:
+                    try:
+                        url_parts = animated_url.split('/')
+                        for part in url_parts:
+                            if f'_{streamer_name}_' in part:
+                                segments = part.split('_')
+                                if len(segments) >= 4:
+                                    extracted_vod_id = segments[2]
+                                    extracted_timestamp = segments[3]
+                                    break
+                    except Exception as e:
+                        pass
+                
+                final_timestamp = dt_utc_str
+                if extracted_timestamp:
+                    try:
+                        dt_from_url = datetime.fromtimestamp(int(extracted_timestamp), timezone.utc)
+                        final_timestamp = dt_from_url.strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception as e:
+                        pass
+
+                stream = {
+                    'dt_utc': final_timestamp,
+                    'dt_local': dt_local_str,
+                    'title': node.get("title", ""),
+                    'duration': duration_hours,
+                    'stream_id': extracted_vod_id or node.get("id", ""),
+                }
+                streams.append(stream)
+                
+            except Exception as e:
+                pass
+                continue
+        
+        return streams
+        
+    except Exception as e:
+        return None
+
+
 def get_latest_streams_from_twitchtracker():
     streamer_name = input("\nEnter streamer name: ").strip().lower()
     url = f"https://twitchtracker.com/{streamer_name}/streams"
     
     current_page = 1
     
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            print("\nOpening TwitchTracker with browser...")
-            streams = selenium_get_latest_streams_from_twitchtracker(url)
+    print("\nSearching for streams...")
+    streams = fetch_recent_streams(streamer_name)
+    
+    if streams:
+        print(f"✓ Found {len(streams)} streams")
+    else:
+        print("✗ Falling back to browser search...")
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                print("\nOpening TwitchTracker with browser...")
+                streams = selenium_get_latest_streams_from_twitchtracker(url)
 
-            if not streams:
-                if attempt < max_retries - 1:
-                    print("Retrying...")
-                    continue
-                else:
-                    print("Unable to get streams from TwitchTracker!")
-                    return
-
-            # Show 10 vods per page
-            rows_per_page = 10
-            total_rows = len(streams)
-            total_pages = (total_rows + rows_per_page - 1) // rows_per_page
-            
-            def display_streams(page_num):
-                start_idx = (page_num - 1) * 10
-                end_idx = min(start_idx + 10, total_rows)
-                rows_to_display = streams[start_idx:end_idx]
-                print(f"\nLatest streams for {streamer_name}:")
-                print("\n#   Date                Duration    Title")
-                print("-" * 80)
-                stream_info = []
-                valid_streams = []
-                for idx, row in enumerate(rows_to_display, start_idx + 1):
-                    try:
-                        date_utc = row['dt_utc']
-                        idx_str = str(idx).ljust(3)
-                        date_str = row['dt_local'].ljust(20)
-                        duration_str = (str(round(row['duration'], 1)) + " hrs").ljust(10)
-                        title = row['title']
-                        if len(title) > 75:
-                            title = title[:72] + "..."
-                        video_id = row['stream_id']
-                        stream_info.append((video_id, date_str, date_utc, title))
-                        valid_streams.append(idx)
-                        print(f"{idx_str} {date_str} {duration_str} {title}")
-                    except Exception as e:
-                        print(f"\n✖  Error processing stream {idx}: {str(e)}")
+                if not streams:
+                    if attempt < max_retries - 1:
+                        print("Retrying...")
                         continue
-                return stream_info, valid_streams
-            
-            stream_info, valid_streams = display_streams(current_page)
-            if not stream_info:
-                print("\n✖  No valid streams found!")
+                    else:
+                        print("Unable to get streams from TwitchTracker!")
+                        return
+
+                break
+            except Exception as e:
+                print(f"\n✖  Error occurred: {str(e)}")
                 if attempt < max_retries - 1:
                     print("Retrying...")
                     continue
                 else:
                     print("Max retries reached!")
                     return
-            break
-        except Exception as e:
-            print(f"\n✖  Error occurred: {str(e)}")
-            if attempt < max_retries - 1:
-                print("Retrying...")
+
+    if not streams:
+        print("\n✖  No streams found!")
+        return
+
+    # Show 10 vods per page
+    rows_per_page = 10
+    total_rows = len(streams)
+    total_pages = (total_rows + rows_per_page - 1) // rows_per_page
+    
+    def display_streams(page_num):
+        start_idx = (page_num - 1) * 10
+        end_idx = min(start_idx + 10, total_rows)
+        rows_to_display = streams[start_idx:end_idx]
+        print("\n#   Date                Duration    Title")
+        print("-" * 80)
+        stream_info = []
+        valid_streams = []
+        for idx, row in enumerate(rows_to_display, start_idx + 1):
+            try:
+                date_utc = row['dt_utc']
+                idx_str = str(idx).ljust(3)
+                date_str = row['dt_local'].ljust(20)
+                duration_str = (str(round(row['duration'], 1)) + " hrs").ljust(10)
+                title = row['title']
+                if len(title) > 75:
+                    title = title[:72] + "..."
+                video_id = row['stream_id']
+                stream_info.append((video_id, date_str, date_utc, title))
+                valid_streams.append(idx)
+                print(f"{idx_str} {date_str} {duration_str} {title}")
+            except Exception as e:
+                print(f"\n✖  Error processing stream {idx}: {str(e)}")
                 continue
-            else:
-                print("Max retries reached!")
-                return
+        return stream_info, valid_streams
+    
+    stream_info, valid_streams = display_streams(current_page)
+    if not stream_info:
+        print("\n✖  No valid streams found!")
+        return
     while True:
         print("\nOptions:")
         print("1. Recover specific stream")
@@ -646,8 +823,8 @@ def get_latest_streams_from_twitchtracker():
                 try:
                     list_index = valid_streams.index(stream_num)
                     video_id, date_str, date_utc, title = stream_info[list_index]
-                    print(f"\nRecovering VOD: {date_str.strip()} - {title}") 
-                    timestamp = datetime.strptime(date_utc, "%Y-%m-%d %H:%M").strftime("%Y-%m-%d %H:%M:%S")  # Use UTC for recovery
+                    print(f"\nRecovering VOD: {date_str.strip()} - {title}")
+                    timestamp = datetime.strptime(date_utc, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d %H:%M:%S")  # Use UTC for recovery
                     m3u8_source = vod_recover(streamer_name, video_id, timestamp, url)
                     if m3u8_source:
                         handle_download_menu(m3u8_source, title=title, stream_datetime=timestamp)
@@ -664,7 +841,7 @@ def get_latest_streams_from_twitchtracker():
             print("\nRecovering all streams...")
             for video_id, date_str, date_utc, title in stream_info:
                 print(f"\nRecovering Video: {date_str} - {title}")  # Show local time
-                timestamp = datetime.strptime(date_utc, "%Y-%m-%d %H:%M").strftime("%Y-%m-%d %H:%M:%S")  # Use UTC for recovery
+                timestamp = datetime.strptime(date_utc, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d %H:%M:%S")  # Use UTC for recovery
                 m3u8_source = vod_recover(streamer_name, video_id, timestamp, url)
                 if m3u8_source:
                     print(f"\nRecovering VOD {video_id}...")
@@ -695,12 +872,7 @@ def check_for_updates():
     if latest_version and current_version:
         if latest_version > current_version:
             print(f"\n\033[94mNew version available: {normalized_tag} (current: {CURRENT_VERSION})\033[0m")
-            while True:
-                choice = input("Do you want to download and install it now? (Y/N): ").strip().lower()
-                if choice in {"y", "n"}:
-                    break
-                print("Invalid input. Please enter Y or N.")
-            if choice == "y":
+            if get_yes_no_choice("Do you want to download and install it now?"):
                 ok = perform_self_update(latest_tag)
                 if ok:
                     try:
@@ -711,12 +883,7 @@ def check_for_updates():
                             subprocess.check_call([sys.executable, deps_script])
                     except Exception as dep_err:
                         print(f"\nWarning: Could not update dependencies automatically: {dep_err}")
-                    while True:
-                        restart_choice = input("Restart Vod Recovery now? (Y/N): ").strip().lower()
-                        if restart_choice in {"y", "n"}:
-                            break
-                        print("Invalid input. Please enter Y or N.")
-                    if restart_choice == "y":
+                    if get_yes_no_choice("Restart Vod Recovery now?"):
                         try:
                             script_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "vod_recovery.py")
                             os.execl(sys.executable, sys.executable, script_path)
@@ -727,7 +894,7 @@ def check_for_updates():
                                 pass
                             sys.exit(0)
                 input("\nPress Enter to continue...")
-                return run_vod_recover()
+                return_to_main_menu()
             else:
                 input("\nPress Enter to continue...")
                 return
@@ -853,7 +1020,8 @@ def ensure_absolute_uri(uri: str, base_link: str) -> str:
 
 def read_csv_file(csv_file_path):
     with open(csv_file_path, "r", encoding="utf-8") as csv_file:
-        return list(csv.reader(csv_file))
+        return [row for row in csv.reader(csv_file)]
+
 
 def get_use_progress_bar():
     try:
@@ -861,6 +1029,7 @@ def get_use_progress_bar():
         return use_progress_bar if use_progress_bar is not None else True
     except Exception:
         return True
+        
 
 def get_current_version():
     current_version = read_config_by_key("settings", "CURRENT_VERSION")
@@ -911,6 +1080,11 @@ def is_video_muted(m3u8_link):
     return bool("unmuted" in response)
 
 
+def is_twitch_livestream_url(url):
+    streamer_pattern = r"^https?://(?:www\.)?twitch\.tv/[^/]+/?$"
+    return re.match(streamer_pattern, url) is not None
+
+
 def calculate_broadcast_duration_in_minutes(hours, minutes):
     return (int(hours) * 60) + int(minutes)
 
@@ -954,7 +1128,7 @@ def parse_streamscharts_url(streamscharts_url):
     except IndexError:
         print("\033[91m \n✖  Invalid Streamscharts URL! Please try again:\n \033[0m")
         input("Press Enter to continue...")
-        return run_vod_recover()
+        return_to_main_menu()
 
 
 def parse_twitchtracker_url(twitchtracker_url):
@@ -965,7 +1139,7 @@ def parse_twitchtracker_url(twitchtracker_url):
     except IndexError:
         print("\033[91m \n✖  Invalid Twitchtracker URL! Please try again:\n \033[0m")
         input("Press Enter to continue...")
-        return run_vod_recover()
+        return_to_main_menu()
 
 
 def parse_sullygnome_url(sullygnome_url):
@@ -976,7 +1150,7 @@ def parse_sullygnome_url(sullygnome_url):
     except IndexError:
         print("\033[91m \n✖  Invalid SullyGnome URL! Please try again:\n \033[0m")
         input("Press Enter to continue...")
-        return run_vod_recover()
+        return_to_main_menu()
 
 
 def set_default_video_format():
@@ -1019,7 +1193,7 @@ def set_default_directory():
         window.wm_attributes("-topmost", 1)
         window.withdraw()
         file_path = filedialog.askdirectory(
-            parent=window, initialdir=dir, title="Select A Default Directory"
+            parent=window, initialdir=get_default_directory(), title="Select A Default Directory"
         )
 
         if file_path:
@@ -1296,7 +1470,7 @@ def website_clip_recover():
         clip_recover(streamer, video_id, int(duration_sullygnome))
     else:
         print("\n✖  Link not supported! Try again...\n")
-        return run_vod_recover()
+        return_to_main_menu()
 
 
 def manual_vod_recover():
@@ -1308,22 +1482,29 @@ def manual_vod_recover():
             print("\n✖  No streamer name! Please try again:\n")
         
     while True:
-        video_id = input("Enter the Video ID (from: Twitchtracker/Streamscharts/Sullygnome): ")
+        video_id = input("Enter the Video ID (from: Twitchtracker/Streamscharts/Sullygnome URL): ")
         if video_id.strip():
             break
         else:
             print("\n✖  No video ID! Please try again:\n")
 
-    timestamp = get_time_input_YYYY_MM_DD_HH_MM_SS("Enter VOD Datetime YYYY-MM-DD HH:MM:SS (24-hour format, UTC): ")
+    _, created_at_iso, started_at_iso = fetch_stream_data(streamer_name, video_id)
+    timestamp = created_at_iso or started_at_iso
+    if timestamp:
+        timestamp = format_iso_datetime(timestamp)
+    else:
+        timestamp = get_time_input_YYYY_MM_DD_HH_MM_SS("Enter VOD Datetime YYYY-MM-DD HH:MM:SS (24-hour format, UTC): ")
+    
 
     streamer_name = streamer_name.lower().strip()
-    print(f"\nRecovering VOD for {streamer_name} with ID {video_id} at {timestamp}")
+    print(f"\nRecovering VOD for {streamer_name} with ID {video_id}")
     m3u8_link = vod_recover(streamer_name, video_id, timestamp)
     if m3u8_link is None:
         sys.exit("No M3U8 link found! Exiting...")
 
     m3u8_source = process_m3u8_configuration(m3u8_link)
     handle_download_menu(m3u8_source)
+
 
 
 def handle_vod_recover(url, url_parser, datetime_parser, website_name):
@@ -1335,7 +1516,7 @@ def handle_vod_recover(url, url_parser, datetime_parser, website_name):
 
     if m3u8_link is None:
         input(f"\nNo M3U8 link found from {website_name}! Press Enter to return...")
-        return run_vod_recover()
+        return_to_main_menu()
 
     m3u8_source = process_m3u8_configuration(m3u8_link)
     m3u8_duration = return_m3u8_duration(m3u8_link)
@@ -1360,10 +1541,13 @@ def website_vod_recover():
         new_tracker_url = re.sub(r"/\d+/", "/", url)
         return handle_vod_recover(new_tracker_url, parse_sullygnome_url, parse_datetime_sullygnome, "Sullygnome")
 
-    twitch_recover(url)
+    if "twitch.tv" in url:
+        if is_twitch_livestream_url(url):
+            return record_live_from_start(url)
+        return twitch_recover(url)
 
     print("\n✖  Link not supported! Returning to main menu...")
-    return run_vod_recover()
+    return_to_main_menu()
 
 
 def get_all_clip_urls(clip_format_dict, clip_format_list):
@@ -1391,7 +1575,8 @@ async def fetch_status(session, url, retries=5, timeout=30):
                             return url
         except asyncio.TimeoutError:
             if attempt == retries - 1:
-                print(f"\nTimeout on final attempt for {url}")
+                 # print(f"\nTimeout Error on final attempt for {url}")
+                pass
         except Exception as e:
             pass
         if attempt != retries - 1:
@@ -1448,6 +1633,66 @@ async def get_vod_urls(streamer_name, video_id, start_timestamp):
     return successful_url
 
 
+def get_chunked_actual_resolution(m3u8_url):
+    try:
+        ffprobe_path = get_ffprobe_path()
+        
+        m3u8_command = [
+            ffprobe_path,
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            "-select_streams", "v:0",
+            m3u8_url
+        ]
+        
+        result = subprocess.run(m3u8_command, capture_output=True, text=True, timeout=10, check=False)
+        if result.returncode != 0 or not result.stdout:
+            return None
+        
+        probe_data = json.loads(result.stdout)
+        
+        if not probe_data.get("streams"):
+            return None
+            
+        video_stream = probe_data["streams"][0]
+        width = video_stream.get("width")
+        height = video_stream.get("height")
+        
+        fps_str = video_stream.get("r_frame_rate", "30/1")
+        try:
+            if "/" in fps_str:
+                num, den = fps_str.split("/")
+                fps = round(float(num) / float(den))
+            else:
+                fps = round(float(fps_str))
+        except (ValueError, ZeroDivisionError):
+            fps = 30
+            
+        if not width or not height:
+            return None
+            
+        if height >= 2160:
+            res_name = "2160p"
+        elif height >= 1440:
+            res_name = "1440p"
+        elif height >= 1080:
+            res_name = "1080p"
+        elif height >= 720:
+            res_name = "720p"
+        elif height >= 480:
+            res_name = "480p"
+        elif height >= 360:
+            res_name = "360p"
+        else:
+            res_name = "160p"
+            
+        return f"{res_name}{fps}"
+        
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ValueError):
+        return None
+
+
 def return_supported_qualities(m3u8_link):
     if m3u8_link is None:
         return None
@@ -1478,9 +1723,28 @@ def return_supported_qualities(m3u8_link):
         return None
 
     with ThreadPoolExecutor() as executor:
-        results = executor.map(check_quality, RESOLUTIONS)
-
-    valid_resolutions = [res for res in results if res]
+        quality_futures = {executor.submit(check_quality, res): res for res in RESOLUTIONS}
+        
+        chunked_future = None
+        if "chunked" in RESOLUTIONS:
+            chunked_url = m3u8_link.replace(f"/{found_quality}/", "/chunked/")
+            chunked_future = executor.submit(get_chunked_actual_resolution, chunked_url)
+        
+        valid_resolutions = []
+        for future in quality_futures:
+            try:
+                result = future.result(timeout=15)
+                if result:
+                    valid_resolutions.append(result)
+            except Exception:
+                continue
+        
+        chunked_resolution_info = None
+        if chunked_future and "chunked" in valid_resolutions:
+            try:
+                chunked_resolution_info = chunked_future.result(timeout=15)
+            except Exception:
+                chunked_resolution_info = None
 
     if not valid_resolutions:
         return None
@@ -1493,7 +1757,10 @@ def return_supported_qualities(m3u8_link):
     print("\nQuality Options:")
     for idx, resolution in enumerate(valid_resolutions, 1):
         if "chunked" in resolution:
-            print(f"{idx}. {resolution.replace('chunked', 'Chunked (Best Quality)')}")
+            if chunked_resolution_info:
+                print(f"{idx}. {chunked_resolution_info}")
+            else:
+                print(f"{idx}. Source (Best Quality)")
         else:
             print(f"{idx}. {resolution}")
     print()
@@ -1568,7 +1835,7 @@ def handle_selenium(url):
         with SB(uc=True) as sb:
             try:
                 sb.activate_cdp_mode(url)
-                sb.sleep(3)
+                sb.sleep(5)
                 sb.uc_gui_click_captcha()
                 sb.sleep(3)
                 source = sb.cdp.get_page_source()
@@ -1581,7 +1848,7 @@ def handle_selenium(url):
                     sb.activate_cdp_mode(url)
                     sb.sleep(5)
                     sb.uc_gui_handle_captcha()
-                    sb.sleep(5)
+                    sb.sleep(3)
                     source = sb.cdp.get_page_source()
                     return source
                 except Exception as e:
@@ -1598,11 +1865,19 @@ def selenium_get_latest_streams_from_twitchtracker(url):
         with SB(uc=True) as sb:
             try:
                 sb.activate_cdp_mode(url)
-                sb.sleep(3)
-                sb.uc_gui_click_captcha()
                 sb.sleep(5)
-            except Exception as e:
-                print(e)
+                sb.uc_gui_click_captcha()
+                sb.sleep(3)
+                sb.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            except Exception:
+                try:
+                    sb.activate_cdp_mode(url)
+                    sb.sleep(5)
+                    sb.uc_gui_handle_captcha()
+                    sb.sleep(3)
+                    sb.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                except Exception as e:
+                    print(e)
             finally:
                 selenium_cleanup()
 
@@ -1619,7 +1894,7 @@ def selenium_get_latest_streams_from_twitchtracker(url):
                     try:
                         timezone_text = sb.execute_script("document.querySelector('#timezone-switch > span')?.textContent || null")
                         if timezone_text is not None:
-                            timezone_match = re.match(r'UTC([+-]\\d+):?[+-]?(\\d+)?', timezone_text)
+                            timezone_match = re.match(r'UTC([+-]\d{1,2})(?::?(\d{2}))?', timezone_text)
                             timezone_offset_hours = int(timezone_match.group(1) if timezone_match else 0)
                             timezone_offset_mins = int(timezone_match.group(2) if timezone_match and timezone_match.group(2) else 0)
                         else:
@@ -1736,7 +2011,7 @@ def selenium_get_latest_streams_from_twitchtracker(url):
 def selenium_cleanup():
     try:
         if os.path.exists("downloaded_files"):
-            rmtree("downloaded_files")
+            shutil.rmtree("downloaded_files")
     except Exception:
         pass
 
@@ -1852,7 +2127,12 @@ def parse_streamscharts_datetime_data(bs):
 
 def parse_datetime_streamscharts(streamscharts_url):
     try:
-        # Method 1: Using requests
+        # Method 1: Using gql api
+        stream_datetime = get_stream_datetime(streamscharts_url)
+        if stream_datetime and stream_datetime != (None, None):
+            return stream_datetime
+
+        # Method 2: Using requests
         response = requests.get(
             streamscharts_url, headers=return_user_agent(), timeout=10
         )
@@ -1860,7 +2140,7 @@ def parse_datetime_streamscharts(streamscharts_url):
             bs = BeautifulSoup(response.content, "html.parser")
             return parse_streamscharts_datetime_data(bs)
 
-        # Method 2: Using Selenium
+        # Method 3: Using Selenium
         print("\nOpening Streamscharts with browser...")
 
         source = handle_selenium(streamscharts_url)
@@ -1886,14 +2166,20 @@ def parse_twitchtracker_datetime_data(bs):
 
 def parse_datetime_twitchtracker(twitchtracker_url):
     try:
-        # Method 1: Using requests
+        # Method 1: Using gql api
+        stream_datetime = get_stream_datetime(twitchtracker_url)
+        if stream_datetime and stream_datetime != (None, None):
+            return stream_datetime
+
+        # Method 2: Using requests
         response = requests.get(twitchtracker_url, headers=return_user_agent(), timeout=10)
         if response.status_code == 200:
             bs = BeautifulSoup(response.content, "html.parser")
             return parse_twitchtracker_datetime_data(bs)
 
-        # Method 2: Using Selenium
+        # Method 3: Using Selenium
         print("\nOpening Twitchtracker with browser...")
+
         source = handle_selenium(twitchtracker_url)
 
         bs = BeautifulSoup(source, "html.parser")
@@ -1932,13 +2218,18 @@ def parse_sullygnome_datetime_data(bs):
 
 def parse_datetime_sullygnome(sullygnome_url):
     try:
-        # Method 1: Using requests
+        # Method 1: Using gql api
+        stream_datetime = get_stream_datetime(sullygnome_url)
+        if stream_datetime and stream_datetime != (None, None):
+            return stream_datetime
+
+        # Method 2: Using requests
         response = requests.get(sullygnome_url, headers=return_user_agent(), timeout=10)
         if response.status_code == 200:
             bs = BeautifulSoup(response.content, "html.parser")
             return parse_sullygnome_datetime_data(bs)
 
-        # Method 2: Using Selenium
+        # Method 3: Using Selenium
         print("\nOpening Sullygnome with browser...")
         source = handle_selenium(sullygnome_url)
 
@@ -2043,19 +2334,21 @@ def return_m3u8_duration(m3u8_link):
 
 
 def check_if_unmuted_is_playable(m3u8_source):
-    ffprobe_command = f"ffprobe -protocol_whitelist file,http,https,tcp,tls,crypto -i {m3u8_source}"
-    result = subprocess.run(ffprobe_command, shell=True, check=False, capture_output=True, text=True)
-    output = result.stderr
-    if "Error" in output:
-        print("Video is not playable after unmuting, using original m3u8 instead\n")
+    try:
+        ffprobe_command = f'{get_ffprobe_path()} -protocol_whitelist file,http,https,tcp,tls,crypto -i "{m3u8_source}"'
+        result = subprocess.run(ffprobe_command, shell=True, check=False, capture_output=True, text=True)
+        output = result.stderr
+        if "Error" in output:
+            print("Video is not playable after unmuting, using original m3u8 instead\n")
+            return False
+        else:
+            return True
+    except Exception as e:
+        print(f"Error checking if unmuted is playable: {e}")
         return False
-    else:
-        return True
-    
 
 def process_m3u8_configuration(m3u8_link, skip_check=False):
     playlist_segments = get_all_playlist_segments(m3u8_link)
-
     check_segments = read_config_by_key("settings", "CHECK_SEGMENTS") and not skip_check
 
     m3u8_source = None
@@ -2072,7 +2365,10 @@ def process_m3u8_configuration(m3u8_link, skip_check=False):
         
     else:
         m3u8_source = m3u8_link
-        os.remove(get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link), parse_video_id_from_m3u8_link(m3u8_link)))
+        file_path = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link), parse_video_id_from_m3u8_link(m3u8_link))
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
     if check_segments:
         print("Checking valid segments...")
         asyncio.run(validate_playlist_segments(playlist_segments))
@@ -2181,6 +2477,59 @@ async def validate_playlist_segments(segments):
     return valid_segments
 
 
+def run_vod_recovery(streamer_name, video_id, timestamp):
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        vod_url = loop.run_until_complete(get_vod_urls(streamer_name, video_id, timestamp))
+        loop.close()
+        return vod_url
+    except Exception as e:
+        print(f"\n✖  Error during VOD recovery: {str(e)}")
+        return None
+
+
+def try_alternate_timestamps(streamer_name, video_id, timestamp, alternate_websites):
+    all_timestamps = [timestamp]
+    asked_same_timestamps = set()
+
+    for website in alternate_websites:
+        parsed_timestamp = None
+        if "streamscharts" in website:
+            parsed_timestamp, _ = parse_datetime_streamscharts(website)
+        elif "twitchtracker" in website:
+            parsed_timestamp, _ = parse_datetime_twitchtracker(website)
+        elif "sullygnome" in website:
+            # If the timestamp shows a year different from the current one, skip it since SullyGnome doesn't provide the year
+            if timestamp and datetime.now().year != int(timestamp.split("-")[0]):
+                continue
+            parsed_timestamp, _ = parse_datetime_sullygnome(website)
+
+        if parsed_timestamp and parsed_timestamp != timestamp and parsed_timestamp not in all_timestamps:
+            print(f"Found different timestamp: {parsed_timestamp}")
+            all_timestamps.append(parsed_timestamp)
+
+            vod_url = run_vod_recovery(streamer_name, video_id, parsed_timestamp)
+            if vod_url:
+                return vod_url
+        else:
+            if parsed_timestamp is not None:
+                print(f"Found same timestamp: {parsed_timestamp}")
+                if parsed_timestamp in asked_same_timestamps:
+                    print("Already handled same timestamp, skipping...")
+                else:
+                    if get_yes_no_choice("Do you want to retry with the same timestamp?"):
+                        asked_same_timestamps.add(parsed_timestamp)
+                        vod_url = run_vod_recovery(streamer_name, video_id, parsed_timestamp)
+                        if vod_url:
+                            return vod_url
+                    else:
+                        asked_same_timestamps.add(parsed_timestamp)
+                        print("Skipping same timestamp...")
+
+    return None
+
+
 def vod_recover(streamer_name, video_id, timestamp, tracker_url=None):
     print(f"\nDatetime: {timestamp}")
     try:
@@ -2191,74 +2540,44 @@ def vod_recover(streamer_name, video_id, timestamp, tracker_url=None):
         vod_url = None
 
         if timestamp:
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            vod_url = loop.run_until_complete(get_vod_urls(streamer_name, video_id, timestamp))
-            loop.close()
-            vod_url = return_supported_qualities(vod_url)
+            m3u8_url = run_vod_recovery(streamer_name, video_id, timestamp)
+            vod_url = return_supported_qualities(m3u8_url)
 
         if vod_url is None:
             alternate_websites = generate_website_links(streamer_name, video_id, tracker_url)
 
             print("\nUnable to recover with provided url! Searching for different timestamps")
-            all_timestamps = [timestamp]
+            vod_url = try_alternate_timestamps(streamer_name, video_id, timestamp, alternate_websites)
+            
+            if vod_url:
+                return vod_url
 
-            # Check if any alternate websites have a different timestamp
-            for website in alternate_websites:
-                parsed_timestamp = None
-                if "streamscharts" in website:                                                                                                              
-                    parsed_timestamp, _ = parse_datetime_streamscharts(website)
-                elif "twitchtracker" in website:
-                    parsed_timestamp, _ = parse_datetime_twitchtracker(website)
-                elif "sullygnome" in website:
-                    # If the timestamp shows a year different from the current one, skip it since SullyGnome doesn't provide the year
-                    if timestamp and datetime.now().year != int(timestamp.split("-")[0]):
-                        continue
-                    parsed_timestamp, _ = parse_datetime_sullygnome(website)
-
-                if (parsed_timestamp and parsed_timestamp != timestamp and parsed_timestamp not in all_timestamps):
-                    print(f"Found different timestamp: {parsed_timestamp}")
-                    all_timestamps.append(parsed_timestamp)
-
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    vod_url = loop.run_until_complete(get_vod_urls(streamer_name, video_id, parsed_timestamp))
-                    loop.close()
-                    
-                    if vod_url:
-                        return vod_url
-                else:
-                    if parsed_timestamp is not None:
-                        print("Found same timestamp, skipping...")
-
-            if not any(all_timestamps):
+            if not timestamp:
                 print("\033[91m \n✖ Unable to get the stream start datetime!\033[0m")
-                print(f'\nOpen the Twitch Tracker page source \033[94mview-source:{tracker_url}\033[0m and search for <meta name=\"description\"')
-                print("The datetime will be in the content, like for example: 2025-01-01 12:00:00")
+                print("The datetime should be in the format: YYYY-MM-DD HH:MM:SS")
 
                 input_datetime = input("\nEnter the datetime: ")
 
                 if not input_datetime:
                     print("\033[91m \n✖  No datetime entered! \033[0m")
                     input("\nPress Enter to continue...")
-                    run_vod_recover()
+                    return_to_main_menu()
                 
-                # Get the VOD URLs using asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                vod_url = loop.run_until_complete(get_vod_urls(streamer_name, video_id, input_datetime))
-                loop.close()
+                vod_url = run_vod_recovery(streamer_name, video_id, input_datetime)
                 
                 if vod_url:
                     return vod_url
 
-            if not vod_url:
+            if not vod_url and tracker_url:
                 print("\033[91m \n✖  Unable to recover the video! \033[0m")
                 input("\nPress Enter to continue...")
-                run_vod_recover()
+                return_to_main_menu()
+            else:
+                return None
 
         return vod_url
+    except ReturnToMain:
+        raise
     except Exception as e:
         print(f"\n✖  Error during VOD recovery: {str(e)}")
         return None
@@ -2383,7 +2702,7 @@ def clip_recover(streamer, video_id, duration):
     if valid_url_list:
         for url in valid_url_list:
             write_text_file(url, get_log_filepath(streamer, video_id))
-        if (read_config_by_key("settings", "AUTO_DOWNLOAD_CLIPS") or input("\nDo you want to download the recovered clips (Y/N): ").upper() == "Y"):
+        if (read_config_by_key("settings", "AUTO_DOWNLOAD_CLIPS") or get_yes_no_choice("\nDo you want to download the recovered clips?")):
             download_clips(get_default_directory(), streamer, video_id)
         if read_config_by_key("settings", "REMOVE_LOG_FILE"):
             os.remove(get_log_filepath(streamer, video_id))
@@ -2405,20 +2724,20 @@ def get_and_validate_csv_filename():
 
         if not file_path:
             print("\nNo file selected! Returning to main menu.")
-            return run_vod_recover()
+            return_to_main_menu()
         window.destroy()
         csv_filename = os.path.basename(file_path)
         pattern = r"^[a-zA-Z0-9_]{4,25} - Twitch stream stats"
         if bool(re.match(pattern, csv_filename)):
             return file_path
         print("The CSV filename MUST be the original filename that was downloaded from sullygnome!")
-        return run_vod_recover()
+        return_to_main_menu()
     except tk.TclError:
         file_path = input("Enter the full path to the CSV file: ").strip(' "\'')
         while True:
             if not file_path:
                 print("\nNo file entered! Returning to main menu.")
-                return run_vod_recover()
+                return_to_main_menu()
             if not os.path.exists(file_path):
                 file_path = input("File does not exist! Enter a valid path: ").strip(' "\'')
                 continue
@@ -2520,8 +2839,7 @@ def random_clip_recovery(video_id, hours, minutes):
                     counter += 1
 
                     if counter % display_count == 0:
-                        user_input = input("\nDo you want to search more URLs (Y/N): ").strip().upper()
-                        if user_input != "Y":                            
+                        if not get_yes_no_choice("\nDo you want to search more URLs?"):                            
                             should_continue = False
                             break
 
@@ -2551,15 +2869,14 @@ async def bulk_clip_recovery():
     elif bulk_recovery_option == "2":
         csv_directory = input("Enter the full path where the sullygnome csv files exist: ").replace('"', "")
         streamer_name = input("Enter the streamer's name: ")
-        merge_files = input("Do you want to merge the CSV files in the directory? (Y/N): ")
-        if merge_files.upper() == "Y":
+        if get_yes_no_choice("Do you want to merge the CSV files in the directory?"):
             merge_csv_files(streamer_name, csv_directory)
             csv_file_path = os.path.join(csv_directory, f"{streamer_name.title()}_MERGED.csv")
         else:
             csv_file_path = get_and_validate_csv_filename()
             csv_file_path = csv_file_path.replace('"', "")
     elif bulk_recovery_option == "3":
-        return run_vod_recover()
+        return_to_main_menu()
 
     clip_format = print_clip_format_menu().split(" ")
     stream_info_dict = parse_clip_csv_file(csv_file_path)
@@ -2588,7 +2905,7 @@ async def bulk_clip_recovery():
                         tasks = []
                         for url in batch:
                             try:
-                                tasks.append(validate_clip(session, url, streamer_name, video_id))
+                                tasks.append(asyncio.create_task(validate_clip(session, url, streamer_name, video_id)))
                             except Exception:
                                 continue
                         
@@ -2600,7 +2917,7 @@ async def bulk_clip_recovery():
                             for result in results:
                                 total_counter += 1
                                 iteration_counter += 1
-                                if iteration_counter % 100 == 0:
+                                if iteration_counter % 100 == 0 or iteration_counter == len(original_vod_url_list):
                                     print(f"\rSearching for clips... {iteration_counter} of {len(original_vod_url_list)}", end=" ", flush=True)
                                 if result and not isinstance(result, Exception):
                                     valid_counter += 1
@@ -2611,20 +2928,19 @@ async def bulk_clip_recovery():
                     print(f"\n\033[92m{valid_counter} Clip(s) Found\033[0m\n")
 
                     if valid_counter != 0:
-                        user_option = input("Do you want to download all clips recovered (Y/N)? ")
-
-                        if user_option.upper() == "Y":
+                        if get_yes_no_choice("Do you want to download all clips recovered?"):
                             download_clips(get_default_directory(), streamer_name, video_id)
                             os.remove(get_log_filepath(streamer_name, video_id))
                         else:
-                            choice = input("\nWould you like to keep the log file containing links to the recovered clips (Y/N)? ")
-                            if choice.upper() == "N":
+                            if not get_yes_no_choice("\nWould you like to keep the log file containing links to the recovered clips?"):
                                 os.remove(get_log_filepath(streamer_name, video_id))
                             else:
                                 print("\nRecovered links saved to " + get_log_filepath(streamer_name, video_id))
                     else:
-                        print("No clips found!... Moving on to next vod." + "\n")
+                        if len(stream_info_dict) > vod_counter:
+                            print("No clips found!... Moving on to next vod.")
                     total_counter, valid_counter, iteration_counter = 0, 0, 0
+                input("Press Enter to continue...")
                 return 
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
             retry_count += 1
@@ -2712,57 +3028,156 @@ def get_yt_dlp_path():
             sys.exit("yt-dlp not installed! Please install yt-dlp and try again.")
 
 
-def get_m3u8_duration(m3u8_link):
-    command = [
-        get_ffprobe_path(),
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        m3u8_link
-    ]
+def get_short_filename(filename):
+    base_name = os.path.splitext(os.path.basename(filename))[0]
+    
+    if " - " in base_name:
+        parts = base_name.split(" - ")
+        if len(parts) >= 2:
+            return f"{parts[0]} - {parts[1]}"
+        else:
+            return parts[0]
+    
+    return base_name[:30] + "..." if len(base_name) > 30 else base_name
 
+
+def format_file_size(n):
     try:
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        n = float(n)
+    except Exception:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    while n >= 1024 and i < len(units) - 1:
+        n /= 1024.0
+        i += 1
+    return f"{n:.1f} {units[i]}"
 
-        if result.returncode != 0:
-            return None
 
-        duration = result.stdout.strip()
-        if duration:
-            return float(duration)
-
+def get_m3u8_duration(m3u8_source):
+    try:
+        total_duration = 0.0
+        
+        if m3u8_source.startswith(('http://', 'https://')):
+            response = requests.get(m3u8_source, timeout=30)
+            response.raise_for_status()
+            content = response.text
+            lines = content.splitlines()
+        else:
+            with open(m3u8_source, 'r', encoding='utf-8', errors='ignore') as file:
+                lines = file.readlines()
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('#EXTINF:'):
+                # Extract duration from #EXTINF:duration,title
+                duration_str = line.split('#EXTINF:')[1].split(',')[0]
+                try:
+                    duration = float(duration_str)
+                    total_duration += duration
+                except ValueError:
+                    continue
+                    
+        return total_duration if total_duration > 0 else None
     except Exception:
         return None
 
 
-def handle_progress_bar(command, output_filename, total_duration):
+def seconds_to_time_str(seconds):
     try:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    except Exception:
+        return "00:00:00"
+
+
+def calculate_slice_duration(start_time, end_time):
+    try:
+        def time_to_seconds(time_str):
+            parts = time_str.split(':')
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds = int(parts[2])
+            return hours * 3600 + minutes * 60 + seconds
+        
+        start_seconds = time_to_seconds(start_time)
+        end_seconds = time_to_seconds(end_time)
+        
+        return end_seconds - start_seconds if end_seconds > start_seconds else None
+    except Exception:
+        return None
+
+
+def handle_progress_bar(command, output_filename, m3u8_source, start_time=None, end_time=None):
+    try:
+        short_title = get_short_filename(output_filename)
+        
+        if start_time and end_time:
+            duration_override = calculate_slice_duration(start_time, end_time)
+        else:
+            duration_override = get_m3u8_duration(m3u8_source)
+        
         with FfmpegProgress(command) as ff:
-            with tqdm(total=100, position=0, desc=output_filename, leave=None, colour="green", unit="%", bar_format="{l_bar}{bar}| {percentage:.1f}/100% [{elapsed}]{postfix}") as pbar:
-                for progress in ff.run_command_with_progress():
-                    pbar.update(progress - pbar.n)
+            with tqdm(total=100, position=0, desc=short_title, leave=None, colour="blue", unit="%", bar_format="{l_bar}{bar}| {percentage:.1f}/100%{postfix}") as pbar:
+                # Extract output file path from the ffmpeg command
+                try:
+                    if "-y" in command:
+                        out_idx = command.index("-y") + 1
+                        output_path_cmd = command[out_idx]
+                    else:
+                        output_path_cmd = output_filename
+                except (ValueError, IndexError):
+                    output_path_cmd = output_filename
+
+                if duration_override:
+                    progress_iterator = ff.run_command_with_progress(duration_override=duration_override)
+                else:
+                    progress_iterator = ff.run_command_with_progress()
+                
+                for progress in progress_iterator:
+                    if progress is not None:
+                        pbar.update(progress - pbar.n)
+
+                    current_time_str = "00:00:00"
+                    total_time_str = "00:00:00"
                     
-                    if total_duration is not None:
-                        total_duration_seconds = total_duration
-                        current_duration_seconds = (progress / 100) * total_duration_seconds
-                        current_duration_str = str(timedelta(seconds=int(current_duration_seconds)))
-                        total_duration_str = str(timedelta(seconds=int(total_duration_seconds)))
-                        pbar.set_postfix_str(f"{current_duration_str}/{total_duration_str}")
+                    if duration_override and progress is not None:
+                        current_seconds = (progress / 100.0) * duration_override
+                        current_time_str = seconds_to_time_str(current_seconds)
+                        total_time_str = seconds_to_time_str(duration_override)
+                    
+                    size_str = "0 B"
+                    try:
+                        file_path = os.path.normpath(output_path_cmd)
+                        if os.path.exists(file_path):
+                            size_str = format_file_size(os.path.getsize(file_path))
+                    except Exception:
+                        pass
+                    
+                    if duration_override:
+                        postfix_str = f"[{current_time_str} / {total_time_str}] • {size_str}"
+                    else:
+                        postfix_str = size_str
+                    
+                    pbar.set_postfix_str(postfix_str, refresh=True)
 
                 pbar.close()
         return True
     except Exception as e:
         print(f"Error: {str(e).strip()}")
-        raise Exception
+        raise Exception from e
 
 
 def handle_file_already_exists(output_path):
     if os.path.exists(output_path):
-        if not ask_to_redownload(output_path):
+        if not get_yes_no_choice(f'File already exists at "{output_path}". Do you want to redownload it?'):
             print("\n\033[94m\u2713 Skipping download!\033[0m\n")
             input("Press Enter to continue...")
-            return run_vod_recover()
-        
+            return_to_main_menu()
+    return True
+
 
 def handle_retry_command(command):
     try:
@@ -2774,7 +3189,27 @@ def handle_retry_command(command):
         return False
 
 
-def download_m3u8_video_url(m3u8_link, output_filename):
+def is_m3u8_live(m3u8_link):
+    try:
+        parsed_url = urlparse(m3u8_link)
+        if parsed_url.scheme in ("http", "https"):
+            try:
+                response = requests.get(m3u8_link, timeout=15)
+                response.raise_for_status()
+                return all('#EXT-X-ENDLIST' not in line for line in response.text.splitlines())
+            except Exception:
+                return True
+        else:
+            with open(m3u8_link, 'r', encoding='utf-8', errors='ignore') as file:
+                for line in file:
+                    if '#EXT-X-ENDLIST' in line:
+                        return False
+    except Exception:
+        return True
+    return True
+
+
+def download_m3u8_video_url(m3u8_link, output_filename, from_start=False):
     if os.name != 'nt':
         output_filename = quote_filename(output_filename)
 
@@ -2783,19 +3218,34 @@ def download_m3u8_video_url(m3u8_link, output_filename):
 
     downloader = get_default_downloader()
 
+
     if downloader == "ffmpeg":
         command = [
-            get_ffmpeg_path(), 
-            "-i", m3u8_link, 
+            get_ffmpeg_path(),
             "-hide_banner",
-            "-c", "copy", 
+            "-loglevel", "warning",
+            "-stats",
+        ]
+
+        is_live = is_m3u8_live(m3u8_link)
+
+        if is_live:
+            if from_start:
+                command += ["-live_start_index", "0"]
+            else:
+                if get_yes_no_choice("Do you want to download the stream from the start?"):
+                    command += ["-live_start_index", "0"]
+
+        command += [
+            "-i", m3u8_link,
+            "-c", "copy",
             "-f", get_ffmpeg_format(get_default_video_format()),
             "-y", output_path
         ]
 
     else:
         command = [
-            "yt-dlp",
+            get_yt_dlp_path(),
             m3u8_link,
             "-o", output_path,
         ]
@@ -2807,8 +3257,7 @@ def download_m3u8_video_url(m3u8_link, output_filename):
 
     try:
         if downloader == "ffmpeg" and get_use_progress_bar():
-            total_duration = get_m3u8_duration(m3u8_link)
-            handle_progress_bar(command, output_filename, total_duration)
+            handle_progress_bar(command, output_filename, m3u8_link)
         else:
             subprocess.run(command, shell=True, check=True)
         return True
@@ -2831,6 +3280,9 @@ def download_m3u8_video_url_slice(m3u8_link, output_filename, video_start_time, 
             get_ffmpeg_path(),
             "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
             "-hide_banner",
+            "-loglevel", "warning",
+            "-stats",
+            "-live_start_index", "0",
             "-ss", video_start_time,
             "-to", video_end_time, 
             "-i", m3u8_link,
@@ -2853,9 +3305,7 @@ def download_m3u8_video_url_slice(m3u8_link, output_filename, video_start_time, 
 
     try:
         if downloader == "ffmpeg" and get_use_progress_bar():
-            total_duration = get_m3u8_duration(m3u8_link)
-            handle_progress_bar(command, output_filename, total_duration)
-
+            handle_progress_bar(command, output_filename, m3u8_link, video_start_time, video_end_time)
         else:
             subprocess.run(command, shell=True, check=True)
         return True
@@ -2869,12 +3319,14 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
 
     downloader = get_default_downloader()
 
-    
+
     if downloader == "ffmpeg":
         command = [
             get_ffmpeg_path(),
             "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
             "-hide_banner",
+            "-loglevel", "warning",
+            "-stats",
             "-ignore_unknown",
             "-i", m3u8_file_path,
             "-c", "copy",
@@ -2887,7 +3339,7 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
         else:  # For Linux and macOS
             m3u8_file_path = f"file://{m3u8_file_path}"
         command = [
-            "yt-dlp",
+            get_yt_dlp_path(),
             "--enable-file-urls",
             m3u8_file_path,
             "-o", output_path,
@@ -2900,9 +3352,7 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
 
     try:
         if downloader == "ffmpeg" and get_use_progress_bar():
-            total_duration = get_m3u8_duration(m3u8_file_path)
-            handle_progress_bar(command, output_filename, total_duration)
-
+            handle_progress_bar(command, output_filename, m3u8_file_path)
         else:
             subprocess.run(command, shell=True, check=True)
         return True
@@ -2927,6 +3377,8 @@ def download_m3u8_video_file_slice(m3u8_file_path, output_filename, video_start_
         get_ffmpeg_path(),
         "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
         "-hide_banner",
+        "-loglevel", "warning",
+        "-stats",
         "-ignore_unknown",
         "-ss", video_start_time,
         "-to", video_end_time, 
@@ -2939,9 +3391,8 @@ def download_m3u8_video_file_slice(m3u8_file_path, output_filename, video_start_
     print("\nCommand: " + " ".join(command) + "\n")
 
     try:
-        if downloader == "ffmpeg" and get_use_progress_bar():
-            total_duration = get_m3u8_duration(m3u8_file_path)
-            handle_progress_bar(command, output_filename, total_duration)
+        if get_use_progress_bar():
+            handle_progress_bar(command, output_filename, m3u8_file_path, video_start_time, video_end_time)
         else:
             subprocess.run(command, shell=True, check=True)
         return True
@@ -2955,26 +3406,92 @@ def get_twitch_channel_from_url(twitch_url):
         path_parts = [p for p in parsed.path.split("/") if p]
         if path_parts:
             return path_parts[0]
-        # Fallback: if user typed just the channel name
         return twitch_url.strip().split("?")[0]
     except Exception:
         return twitch_url
 
 
-def download_twitch_live_from_start():
-    # print("\nTwitch Live Stream Download")
+def handle_live_recording_fallback(channel_name, command, output_path):
+    print(f"\033[94m\nVod Storage for this stream is likely disabled, searching for stream M3U8...\033[0m")
+    
+    vod_id, created_at_iso, started_at_iso = fetch_stream_data(channel_name)
+    datetime_iso = created_at_iso or started_at_iso
+    
+    if not datetime_iso:
+        return False
+        
+    formatted = format_iso_datetime(datetime_iso)
+    if not formatted:
+        return False
+        
+    m3u8_source = vod_recover(channel_name, vod_id, formatted)
+    if m3u8_source:
+        vod_filename = get_filename_for_url_source(m3u8_source, title=None, stream_date=formatted)
+        success = download_m3u8_video_url(m3u8_source, vod_filename, from_start=True)
+        if success:
+            print(f"\n\033[92m\u2713 Live recording saved to {os.path.join(get_default_directory(), vod_filename)}\033[0m\n")
+            input("Press Enter to continue...")
+            return True
+    
+    print("\033[91m \n✖  Unable to record stream from the beginning! \033[0m")
+    
+    if get_yes_no_choice("Try to record from the current point?"):
+        if "--live-from-start" in command:
+            command.remove("--live-from-start")
+        
+        try:
+            subprocess.run(command, shell=True, check=True)
+            print(f"\n\033[92m\u2713 Live recording saved to {output_path}\033[0m\n")
+            input("Press Enter to continue...")
+            return True
+        except Exception as e:
+            print(f"\n\033[94m\nError: {e}\033[0m")
+            return False
+    else:
+        return_to_main_menu()
+
+
+def record_live_from_start(twitch_url=None):
+    if not twitch_url:
+        twitch_url = print_get_twitch_url_or_name_menu()
+    
+    if not is_twitch_livestream_url(twitch_url):
+        return twitch_recover(twitch_url)
+    
+    channel_name = get_twitch_channel_from_url(twitch_url)
+    from_start = get_yes_no_choice("Download from the start?")
+    
+    output_filename = f"{channel_name} - Live - {datetime.now().strftime('%Y-%m-%d %H-%M-%S')}{get_default_video_format()}"
+    if os.name != 'nt':
+        output_filename = quote_filename(output_filename)
+    
+    output_path = os.path.normpath(os.path.join(get_default_directory(), output_filename))
+    handle_file_already_exists(output_path)
+    
+    yt_dlp_bin = get_yt_dlp_path()
+    command = [yt_dlp_bin, twitch_url, "-o", output_path]
+    
+    if from_start:
+        command.insert(1, "--live-from-start")
+    
+    custom_options = get_yt_dlp_custom_options()
+    if custom_options:
+        command.extend(custom_options)
+    
+    print("\nCommand: " + " ".join(command) + "\n")
+    
+    try:
+        subprocess.run(command, shell=True, check=True)
+        print(f"\n\033[92m✓ Live recording saved to {output_path}\033[0m\n")
+        input("Press Enter to continue...")
+        return True
+    except Exception as e:
+        return handle_live_recording_fallback(channel_name, command, output_path)
+
+
+def wait_and_record_stream():
     twitch_url = print_get_twitch_url_or_name_menu()
     channel_name = get_twitch_channel_from_url(twitch_url)
-
-    while True:
-        choice = input("\nDownload from the start? (Y/N): ").strip().lower()
-        if choice in ['y', 'yes']:
-            from_start = True
-            break
-        elif choice in ['n', 'no']:
-            from_start = False
-            break
-        print("Invalid input! Please enter 'Y' for Yes or 'N' for No.")
 
     output_filename = f"{channel_name} - Live - {datetime.now().strftime('%Y-%m-%d %H-%M-%S')}{get_default_video_format()}"
     if os.name != 'nt':
@@ -2984,25 +3501,34 @@ def download_twitch_live_from_start():
     handle_file_already_exists(output_path)
 
     yt_dlp_bin = get_yt_dlp_path()
-    
-    command = [yt_dlp_bin, twitch_url, "-o", output_path]
-    
-    if from_start:
-        command.insert(1, "--live-from-start")
+    command = [yt_dlp_bin, "--wait-for-video", "30", twitch_url, "-o", output_path]
 
     custom_options = get_yt_dlp_custom_options()
     if custom_options:
         command.extend(custom_options)
 
     print("\nCommand: " + " ".join(command) + "\n")
-
     try:
         subprocess.run(command, shell=True, check=True)
-        print(f"\n\033[92m✓ Live recording saved to {output_path}\033[0m\n")
+        print(f"\n\033[92m✓ Recording saved to {output_path}\033[0m\n")
         input("Press Enter to continue...")
         return True
-    except Exception:
-        handle_retry_command(command)
+    except Exception as e:
+        print(f"\n\033[91m✖ Failed to record: {e}\033[0m\n")
+        return False
+
+
+def record_live_menu():
+    print("\n1) Record Stream\n2) Wait and record when stream starts\n3) Return")
+    while True:
+        choice = input("\nChoose an option: ").strip()
+        if choice == "1":
+            return record_live_from_start()
+        if choice == "2":
+            return wait_and_record_stream()
+        if choice == "3":
+            return
+        print("\n✖  Invalid option! Please Try Again.")
 
 
 def get_VLC_Location():
@@ -3217,11 +3743,11 @@ def handle_download_menu(link, title=None, stream_datetime=None):
         if start_download == 1:
             handle_vod_url_normal(link, title, stream_datetime)
             input("Press Enter to continue...")
-            return run_vod_recover()
+            return_to_main_menu()
         elif start_download == 2:
             handle_vod_url_trim(link, title, stream_datetime)
             input("Press Enter to continue...")
-            return run_vod_recover()
+            return_to_main_menu()
         elif start_download == 3 and vlc_location:
             if os.path.isfile(link):
                 link = link.replace("/", "\\") if os.name == "nt" else link
@@ -3233,7 +3759,7 @@ def handle_download_menu(link, title=None, stream_datetime=None):
             else:
                 subprocess.Popen([vlc_location, link])
         elif start_download == exit_option:
-            return run_vod_recover()
+            return_to_main_menu()
         else:
             print("\n✖  Invalid option! Please Try Again.\n")
 
@@ -3314,7 +3840,7 @@ def handle_file_download_menu(m3u8_file_path):
             else:
                 subprocess.Popen([vlc_location, m3u8_file_path])
         elif start_download == exit_option:
-            return run_vod_recover()
+            return_to_main_menu()
         else:
             print("\n✖  Invalid option! Please Try Again.\n")
 
@@ -3347,16 +3873,6 @@ def extract_id_from_url(url: str):
     return extract_id_from_url(url)
 
 
-def extract_slug_and_streamer_from_clip_url(url):
-    try:
-        pattern = r"twitch\.tv/([^\/]+)/clip/([^\/?]+)"
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1), match.group(2)
-        sys.exit("\n✖  Invalid Twitch Clip URL! Please Try Again.\n")
-    except Exception:
-        sys.exit("\n✖  Invalid Twitch Clip URL! Please Try Again.\n")
-
 
 def fetch_twitch_data(vod_id, retries=3, delay=5):
     attempt = 0
@@ -3384,7 +3900,9 @@ def fetch_twitch_data(vod_id, retries=3, delay=5):
 
     return None
 
+
 def get_vod_or_highlight_url(vod_id):
+    print(f"\nSearching URL for Vod {vod_id}...")
     url = f"https://usher.ttvnw.net/vod/{vod_id}.m3u8"
     response = requests.get(url, timeout=30)
     if response.status_code != 200:
@@ -3424,13 +3942,17 @@ def get_vod_or_highlight_url(vod_id):
 
 def twitch_recover(link=None):
     url = link if link else print_get_twitch_url_menu()
+
+    if is_twitch_livestream_url(url):
+        return record_live_from_start(url)
+    
     vod_id = extract_id_from_url(url)
     url, title, stream_datetime = get_vod_or_highlight_url(vod_id)
 
     if url is None:
         print("\n✖  Unable to find it! Try using one of the other websites.\n")
         input("Press Enter to continue...")
-        return run_vod_recover()
+        return_to_main_menu()
 
     try:
         format_datetime = datetime.strptime(stream_datetime, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M:%S")
@@ -3486,7 +4008,7 @@ def get_twitch_clip(clip_slug, retries=3):
 
     print("\n✖  Unable to get clip! Check the URL and try again.\n")
     input("Press Enter to continue...")
-    return run_vod_recover()
+    return_to_main_menu()
 
 
 def twitch_clip_downloader(clip_url, slug, streamer):
@@ -3497,8 +4019,8 @@ def twitch_clip_downloader(clip_url, slug, streamer):
             raise Exception("Unable to download clip!")
         download_location = os.path.join(get_default_directory(), f"{streamer}-{slug}{get_default_video_format()}")
 
-        with open(os.path.join(get_default_directory(), download_location), "wb") as file:
-            copyfileobj(response.raw, file)
+        with open(os.path.join(download_location), "wb") as file:
+            shutil.copyfileobj(response.raw, file)
 
         print(f"\n\033[92m\u2713 Clip downloaded to {download_location}\033[0m\n")
 
@@ -3509,9 +4031,131 @@ def twitch_clip_downloader(clip_url, slug, streamer):
 
 def handle_twitch_clip(clip_url):
     streamer, slug = extract_slug_and_streamer_from_clip_url(clip_url)
-    streamer = clip_url.split("/")[3]
     url = get_twitch_clip(slug)
     return twitch_clip_downloader(url, slug, streamer)
+
+
+def fetch_stream_data(channel_name: str, vod_id: str = None):
+    try:
+        if vod_id:
+            query = """
+                query($login:String!, $videoId:ID){
+                user(login:$login){
+                    lastBroadcast{ id startedAt }
+                    stream{ id createdAt }
+                    videos(first:100){ edges{ node{ id createdAt publishedAt title previewThumbnailURL animatedPreviewURL} } }
+                }
+                video(id:$videoId){ id createdAt}
+                }
+            """
+            variables = {"login": channel_name, "videoId": vod_id}
+        else:
+            query = (
+                "query($login:String!){\n"
+                "  user(login:$login){\n"
+                "    lastBroadcast{ id startedAt }\n"
+                "    stream{ id createdAt }\n"
+                "    videos(first:1){ edges{ node{ id createdAt publishedAt title previewThumbnailURL animatedPreviewURL } } }\n"
+                "  }\n"
+                "}"
+            )
+            variables = {"login": channel_name}
+
+        payload = {"query": query, "variables": variables}
+
+        res = requests.post(
+            "https://gql.twitch.tv/gql",
+            json=payload,
+            headers={
+                "Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=30,
+        )
+        if res.status_code != 200:
+            return None, None, None
+
+        data = (res.json() or {}).get("data") or {}
+
+        user = data.get("user") or {}
+        last_broadcast = user.get("lastBroadcast") or {}
+        current_stream = user.get("stream") or {}
+        latest_videos_edges = ((user.get("videos") or {}).get("edges") or [])
+        recent_videos_edges = ((user.get("videosAll") or {}).get("edges") or [])
+        targeted_video = data.get("video") or {}
+
+        last_broadcast_id = last_broadcast.get("id")
+        last_broadcast_started_at = last_broadcast.get("startedAt")
+        stream_id = current_stream.get("id")
+        stream_created_at = current_stream.get("createdAt")
+        latest_vod_node = latest_videos_edges[0].get("node") if latest_videos_edges else {}
+        latest_vod_id = (latest_vod_node or {}).get("id")
+
+
+        if vod_id:
+            # 1) Direct VOD Id lookup
+            if (targeted_video.get("id") or None) == vod_id:
+                return vod_id, targeted_video.get("createdAt"), targeted_video.get("publishedAt")
+            # 2) Live stream Id match
+            if stream_id and str(stream_id) == str(vod_id):
+                return vod_id, stream_created_at, stream_created_at
+            # 3) Search among recent videos
+            for edge in latest_videos_edges:
+                vod_node = (edge or {}).get("node") or {}
+                if (vod_node.get("id") or None) == vod_id:
+                    return vod_id, vod_node.get("createdAt"), vod_node.get("publishedAt")
+                
+                preview_url = vod_node.get("previewThumbnailURL") or ""
+                animated_url = vod_node.get("animatedPreviewURL") or ""
+                if (preview_url and vod_id in preview_url) or (animated_url and vod_id in animated_url):
+                    return vod_node.get("id"), vod_node.get("createdAt"), vod_node.get("publishedAt")
+            # 4) Broadcast Id match
+            if last_broadcast_id and str(last_broadcast_id) == str(vod_id):
+                return vod_id, None, last_broadcast_started_at
+            # print("No videos found with the given ID")
+            return None, None, None
+
+
+        if stream_id and stream_created_at:
+            return stream_id, stream_created_at, None
+        if last_broadcast_id and last_broadcast_started_at:
+            return last_broadcast_id, None, last_broadcast_started_at
+        
+        return None, None, None
+    except Exception as e:
+        print(f"Error fetching stream data: {e}")
+        return None, None, None
+
+
+def get_stream_datetime(url: str):
+    channel_name = None
+    vod_id = None
+    if "twitchtracker.com" not in url:
+        converted_url = convert_url(url, "twitchtracker")
+    else:
+        converted_url = url
+
+    url_match = re.search(r"twitchtracker\.com/([^/\s]+)/streams(?:/(\d+))?", converted_url, re.IGNORECASE)
+    if url_match:
+        channel_name = url_match.group(1)
+        vod_id = url_match.group(2) if url_match.lastindex and url_match.lastindex >= 2 else None
+
+    if not channel_name:
+        return None, None
+
+    broadcast_id, created_at_iso, started_at_iso = fetch_stream_data(channel_name, vod_id)
+    
+    if not broadcast_id and not created_at_iso:
+        return None, None
+
+    datetime_iso = created_at_iso or started_at_iso
+    if datetime_iso:
+        formatted = format_iso_datetime(datetime_iso)
+        return formatted, None
+
+    return None, None
 
 
 def run_vod_recover():
@@ -3521,123 +4165,124 @@ def run_vod_recover():
     while menu < 50:
         print()
         menu = print_main_menu()
-        if menu == 1:
-            vod_mode = print_video_mode_menu()
-            if vod_mode == 1:
-                link, stream_datetime = website_vod_recover()
-                handle_download_menu(link, stream_datetime=stream_datetime)
-            elif vod_mode == 2:
-                manual_vod_recover()
-            elif vod_mode == 3:
-                bulk_vod_recovery()
-            elif vod_mode == 4:
-                continue
-        elif menu == 2:
-            clip_type = print_clip_type_menu()
-            if clip_type == 1:
-                clip_recovery_method = print_clip_recovery_menu()
-                if clip_recovery_method == 1:
-                    website_clip_recover()
-                elif clip_recovery_method == 2:
-                    manual_clip_recover()
-                elif clip_recovery_method == 3:
+        try:
+            if menu == 1:
+                vod_mode = print_video_mode_menu()
+                if vod_mode == 1:
+                    link, stream_datetime = website_vod_recover()
+                    handle_download_menu(link, stream_datetime=stream_datetime)
+                elif vod_mode == 2:
+                    manual_vod_recover()
+                elif vod_mode == 3:
+                    bulk_vod_recovery()
+                elif vod_mode == 4:
                     continue
-            elif clip_type == 2:
-                video_id, hour, minute = get_random_clip_information()
-                random_clip_recovery(video_id, hour, minute)
-            elif clip_type == 3:
-                clip_url = print_get_twitch_url_menu()
-                handle_twitch_clip(clip_url)
-            elif clip_type == 4:
-                asyncio.run(bulk_clip_recovery())
-            elif clip_type == 5:
-                continue
-        elif menu == 3:
-            download_type = print_download_type_menu()
-            if download_type == 1:
-                vod_url = print_get_m3u8_link_menu()
-                print()
-                m3u8_source = process_m3u8_configuration(vod_url)
-                handle_download_menu(m3u8_source)
-            elif download_type == 2:
-                file_path = get_m3u8_file_dialog()
-                if not file_path:
-                    print("\nNo file selected! Returning to main menu.")
-                    continue
-                print(f"\n{file_path}\n")
-                m3u8_file_path = file_path.strip()
-
-                handle_file_download_menu(m3u8_file_path)
-                input("Press Enter to continue...")
-
-            elif download_type == 3:
-                twitch_recover()
-
-            elif download_type == 4:
-                continue
-        elif menu == 4:
-            download_twitch_live_from_start()
-        elif menu == 5:
-            get_latest_streams_from_twitchtracker()
-        elif menu == 6:
-            mode = print_handle_m3u8_availability_menu()
-            if mode == 1:
-                url = print_get_m3u8_link_menu()
-                is_muted = is_video_muted(url)
-                if is_muted:
-                    print("\nVideo contains muted segments")
-                    choice = input("Do you want to unmute the video? (Y/N): ")
-                    if choice.upper() == "Y":
-                        print()
-                        unmute_vod(url)
-                        input("Press Enter to continue...")
-                    else:
-                        print("\nReturning to main menu...")
+            elif menu == 2:
+                clip_type = print_clip_type_menu()
+                if clip_type == 1:
+                    clip_recovery_method = print_clip_recovery_menu()
+                    if clip_recovery_method == 1:
+                        website_clip_recover()
+                    elif clip_recovery_method == 2:
+                        manual_clip_recover()
+                    elif clip_recovery_method == 3:
                         continue
-                else:
-                    print("\n\033[92mVideo is not muted! \033[0m")
-            elif mode == 2:
-                url = print_get_m3u8_link_menu()
-                mark_invalid_segments_in_playlist(url)
-            elif mode == 3:
-                url = print_get_m3u8_link_menu()
-                unmute_vod(url)
-                print(f"File saved to {get_default_directory()}")
-                input("\nPress Enter to continue...")
+                elif clip_type == 2:
+                    video_id, hour, minute = get_random_clip_information()
+                    random_clip_recovery(video_id, hour, minute)
+                elif clip_type == 3:
+                    clip_url = print_get_twitch_clip_url_menu()
+                    handle_twitch_clip(clip_url)
+                elif clip_type == 4:
+                    asyncio.run(bulk_clip_recovery())
+                elif clip_type == 5:
+                    continue
             elif menu == 3:
-                continue
-        elif menu == 7:
-            while True:
-                print()
-                options_choice = print_options_menu()
-                if options_choice == 1:
-                    set_default_video_format()
-                elif options_choice == 2:
-                    set_default_directory()
-                elif options_choice == 3:
-                    set_default_downloader()
-                elif options_choice == 4:
-                    check_for_updates()
-                elif options_choice == 5:
-                    script_dir = get_script_directory()
-                    config_file_path = os.path.join(script_dir, "config", "settings.json")
-                    if os.path.exists(config_file_path):
-                        print(f"Opening {config_file_path}...")
-                        open_file(config_file_path)
-                        input("\nPress Enter to continue...")
-                    else:
-                        print("File not found!")
-                elif options_choice == 6:
-                    print_help()
-                    input("Press Enter to continue...")
-                elif options_choice == 7:
-                    break
-        elif menu == 8:
-            print("\nExiting...\n")
-            sys.exit()
-        else:
-            run_vod_recover()
+                download_type = print_download_type_menu()
+                if download_type == 1:
+                    vod_url = print_get_m3u8_link_menu()
+                    print()
+                    m3u8_source = process_m3u8_configuration(vod_url)
+                    handle_download_menu(m3u8_source)
+                elif download_type == 2:
+                    file_path = get_m3u8_file_dialog()
+                    if not file_path:
+                        print("\nNo file selected! Returning to main menu.")
+                        continue
+                    print(f"\n{file_path}\n")
+                    m3u8_file_path = file_path.strip()
 
+                    handle_file_download_menu(m3u8_file_path)
+                    input("Press Enter to continue...")
+
+                elif download_type == 3:
+                    twitch_recover()
+
+                elif download_type == 4:
+                    continue
+            elif menu == 4:
+                record_live_menu()
+            elif menu == 5:
+                get_latest_streams_from_twitchtracker()
+            elif menu == 6:
+                mode = print_handle_m3u8_availability_menu()
+                if mode == 1:
+                    url = print_get_m3u8_link_menu()
+                    is_muted = is_video_muted(url)
+                    if is_muted:
+                        print("\nVideo contains muted segments")
+                        if get_yes_no_choice("Do you want to unmute the video?"):
+                            print()
+                            unmute_vod(url)
+                            input("Press Enter to continue...")
+                        else:
+                            print("\nReturning to main menu...")
+                            continue
+                    else:
+                        print("\n\033[92mVideo is not muted! \033[0m")
+                elif mode == 2:
+                    url = print_get_m3u8_link_menu()
+                    mark_invalid_segments_in_playlist(url)
+                elif mode == 3:
+                    url = print_get_m3u8_link_menu()
+                    unmute_vod(url)
+                    print(f'File saved to "{get_default_directory()}"')
+                    input("\nPress Enter to continue...")
+                elif mode == 4:
+                    continue
+            elif menu == 7:
+                while True:
+                    print()
+                    options_choice = print_options_menu()
+                    if options_choice == 1:
+                        set_default_video_format()
+                    elif options_choice == 2:
+                        set_default_directory()
+                    elif options_choice == 3:
+                        set_default_downloader()
+                    elif options_choice == 4:
+                        check_for_updates()
+                    elif options_choice == 5:
+                        script_dir = get_script_directory()
+                        config_file_path = os.path.join(script_dir, "config", "settings.json")
+                        if os.path.exists(config_file_path):
+                            print(f"Opening {config_file_path}...")
+                            open_file(config_file_path)
+                            input("\nPress Enter to continue...")
+                        else:
+                            print("File not found!")
+                    elif options_choice == 6:
+                        print_help()
+                        input("Press Enter to continue...")
+                    elif options_choice == 7:
+                        break
+            elif menu == 8:
+                print("\nExiting...\n")
+                sys.exit()
+            else:
+                continue
+        except ReturnToMain:
+            continue
 
 
 if __name__ == "__main__":
