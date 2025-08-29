@@ -2,7 +2,7 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 natsort>=8.4.0
 ffmpeg_downloader==0.4.0
-seleniumbase==4.41.1
+seleniumbase==4.41.3
 aiohttp>=3.9.5
 tqdm>=4.60.0
-ffmpeg_progress_yield==1.0.1
+ffmpeg_progress_yield==1.0.2
