@@ -8,7 +8,7 @@ import subprocess
 import tkinter as tk
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from time import sleep, time
+import time
 from datetime import datetime, timedelta, timezone
 from tkinter import filedialog
 import shutil
@@ -32,9 +32,9 @@ import zipfile
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.5.0"
+CURRENT_VERSION = "1.5.1"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
-RESOLUTIONS = ["chunked", "2160p60", "2160p30", "1440p60", "1440p30", "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
+RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -411,7 +411,7 @@ def get_latest_version(retries=3):
                 return None
         except Exception:
             if attempt < retries - 1: 
-                sleep(3)  
+                time.sleep(3)  
                 continue 
             else:
                 return None
@@ -426,7 +426,7 @@ def get_latest_release_info(retries=3):
             return None
         except Exception:
             if attempt < retries - 1:
-                sleep(3)
+                time.sleep(3)
                 continue
             return None
 
@@ -1007,7 +1007,7 @@ def write_m3u8_to_file(m3u8_link, destination_path, max_retries=5):
             return m3u8_file
         except Exception:
             attempt += 1
-            sleep(1)
+            time.sleep(1)
     raise Exception(f"Failed to write M3U8 after {max_retries} attempts.")
 
 
@@ -1488,13 +1488,7 @@ def manual_vod_recover():
         else:
             print("\n✖  No video ID! Please try again:\n")
 
-    _, created_at_iso, started_at_iso = fetch_stream_data(streamer_name, video_id)
-    timestamp = created_at_iso or started_at_iso
-    if timestamp:
-        timestamp = format_iso_datetime(timestamp)
-    else:
-        timestamp = get_time_input_YYYY_MM_DD_HH_MM_SS("Enter VOD Datetime YYYY-MM-DD HH:MM:SS (24-hour format, UTC): ")
-    
+    timestamp = get_time_input_YYYY_MM_DD_HH_MM_SS("Enter VOD Datetime YYYY-MM-DD HH:MM:SS (24-hour format, UTC): ")
 
     streamer_name = streamer_name.lower().strip()
     print(f"\nRecovering VOD for {streamer_name} with ID {video_id}")
@@ -2125,12 +2119,13 @@ def parse_streamscharts_datetime_data(bs):
     return stream_datetime, streamcharts_duration_in_minutes
 
 
-def parse_datetime_streamscharts(streamscharts_url):
+def parse_datetime_streamscharts(streamscharts_url, skip_gql=False):
     try:
         # Method 1: Using gql api
-        stream_datetime = get_stream_datetime(streamscharts_url)
-        if stream_datetime and stream_datetime != (None, None):
-            return stream_datetime
+        if not skip_gql:
+            stream_datetime = get_stream_datetime(streamscharts_url)
+            if stream_datetime and stream_datetime != (None, None):
+                return stream_datetime
 
         # Method 2: Using requests
         response = requests.get(
@@ -2164,12 +2159,13 @@ def parse_twitchtracker_datetime_data(bs):
     return twitchtracker_datetime, twitchtracker_duration_in_minutes
 
 
-def parse_datetime_twitchtracker(twitchtracker_url):
+def parse_datetime_twitchtracker(twitchtracker_url, skip_gql=False):
     try:
         # Method 1: Using gql api
-        stream_datetime = get_stream_datetime(twitchtracker_url)
-        if stream_datetime and stream_datetime != (None, None):
-            return stream_datetime
+        if not skip_gql:
+            stream_datetime = get_stream_datetime(twitchtracker_url)
+            if stream_datetime and stream_datetime != (None, None):
+                return stream_datetime
 
         # Method 2: Using requests
         response = requests.get(twitchtracker_url, headers=return_user_agent(), timeout=10)
@@ -2216,12 +2212,13 @@ def parse_sullygnome_datetime_data(bs):
     return sullygnome_datetime, sullygnome_duration_in_minutes
 
 
-def parse_datetime_sullygnome(sullygnome_url):
+def parse_datetime_sullygnome(sullygnome_url, skip_gql=False):
     try:
         # Method 1: Using gql api
-        stream_datetime = get_stream_datetime(sullygnome_url)
-        if stream_datetime and stream_datetime != (None, None):
-            return stream_datetime
+        if not skip_gql:
+            stream_datetime = get_stream_datetime(sullygnome_url)
+            if stream_datetime and stream_datetime != (None, None):
+                return stream_datetime
 
         # Method 2: Using requests
         response = requests.get(sullygnome_url, headers=return_user_agent(), timeout=10)
@@ -2496,14 +2493,14 @@ def try_alternate_timestamps(streamer_name, video_id, timestamp, alternate_websi
     for website in alternate_websites:
         parsed_timestamp = None
         if "streamscharts" in website:
-            parsed_timestamp, _ = parse_datetime_streamscharts(website)
+            parsed_timestamp, _ = parse_datetime_streamscharts(website, skip_gql=True)
         elif "twitchtracker" in website:
-            parsed_timestamp, _ = parse_datetime_twitchtracker(website)
+            parsed_timestamp, _ = parse_datetime_twitchtracker(website, skip_gql=True)
         elif "sullygnome" in website:
             # If the timestamp shows a year different from the current one, skip it since SullyGnome doesn't provide the year
             if timestamp and datetime.now().year != int(timestamp.split("-")[0]):
                 continue
-            parsed_timestamp, _ = parse_datetime_sullygnome(website)
+            parsed_timestamp, _ = parse_datetime_sullygnome(website, skip_gql=True)
 
         if parsed_timestamp and parsed_timestamp != timestamp and parsed_timestamp not in all_timestamps:
             print(f"Found different timestamp: {parsed_timestamp}")
@@ -2680,7 +2677,7 @@ def clip_recover(streamer, video_id, duration):
                 return url, response.status_code
             except Exception:
                 if attempt < max_retries:
-                    sleep(0.5)
+                    time.sleep(0.5)
                 else:
                     return url, None
 
@@ -2810,7 +2807,7 @@ def random_clip_recovery(video_id, hours, minutes):
                 if response.status_code == 200:
                     return url
             except Exception:
-                sleep(0.5)
+                time.sleep(0.5)
         return None
 
     print("Searching...")
@@ -3896,7 +3893,7 @@ def fetch_twitch_data(vod_id, retries=3, delay=5):
             pass
 
         attempt += 1
-        sleep(delay)
+        time.sleep(delay)
 
     return None
 
@@ -4004,7 +4001,7 @@ def get_twitch_clip(clip_slug, retries=3):
         except (requests.exceptions.RequestException, ValueError):
             print(f"\nRetrying...")
             if attempt < retries - 1:
-                sleep(3) 
+                time.sleep(3) 
 
     print("\n✖  Unable to get clip! Check the URL and try again.\n")
     input("Press Enter to continue...")
@@ -4055,7 +4052,7 @@ def fetch_stream_data(channel_name: str, vod_id: str = None):
                 "  user(login:$login){\n"
                 "    lastBroadcast{ id startedAt }\n"
                 "    stream{ id createdAt }\n"
-                "    videos(first:1){ edges{ node{ id createdAt publishedAt title previewThumbnailURL animatedPreviewURL } } }\n"
+                "    videos(first:5){ edges{ node{ id createdAt publishedAt title previewThumbnailURL animatedPreviewURL } } }\n"
                 "  }\n"
                 "}"
             )
@@ -4083,7 +4080,6 @@ def fetch_stream_data(channel_name: str, vod_id: str = None):
         last_broadcast = user.get("lastBroadcast") or {}
         current_stream = user.get("stream") or {}
         latest_videos_edges = ((user.get("videos") or {}).get("edges") or [])
-        recent_videos_edges = ((user.get("videosAll") or {}).get("edges") or [])
         targeted_video = data.get("video") or {}
 
         last_broadcast_id = last_broadcast.get("id")
@@ -4091,7 +4087,6 @@ def fetch_stream_data(channel_name: str, vod_id: str = None):
         stream_id = current_stream.get("id")
         stream_created_at = current_stream.get("createdAt")
         latest_vod_node = latest_videos_edges[0].get("node") if latest_videos_edges else {}
-        latest_vod_id = (latest_vod_node or {}).get("id")
 
 
         if vod_id:
