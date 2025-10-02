@@ -33,7 +33,7 @@ import zipfile
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.5.3"
+CURRENT_VERSION = "1.5.4"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -769,7 +769,7 @@ def fetch_recent_streams_api(streamer_name, max_streams=100):
 
                 # Convert to local time only for display purposes
                 dt_local = dt_utc.astimezone()
-                dt_local_str = dt_local.strftime("%d/%b/%Y %H:%M")
+                dt_local_str = dt_local.strftime("%Y-%m-%d %H:%M:%S")
 
                 length_seconds = node.get("lengthSeconds", 0)
                 duration_hours = length_seconds / 3600.0
@@ -811,16 +811,19 @@ def fetch_recent_streams_api(streamer_name, max_streams=100):
                         pass
                 
                 final_timestamp = dt_utc_str
+                final_local_timestamp = dt_local_str
                 if extracted_timestamp:
                     try:
                         dt_from_url = datetime.fromtimestamp(int(extracted_timestamp), timezone.utc)
                         final_timestamp = dt_from_url.strftime("%Y-%m-%d %H:%M:%S")
+                        dt_local_from_url = dt_from_url.astimezone()
+                        final_local_timestamp = dt_local_from_url.strftime("%Y-%m-%d %H:%M:%S")
                     except Exception as e:
                         pass
 
                 stream = {
                     'dt_utc': final_timestamp,
-                    'dt_local': dt_local_str,
+                    'dt_local': final_local_timestamp,
                     'title': node.get("title", ""),
                     'duration': duration_hours,
                     'stream_id': extracted_vod_id or node.get("id", ""),
@@ -2117,7 +2120,7 @@ def selenium_get_latest_streams_from_twitchtracker(streamer_name):
                     except Exception as pe:
                         continue
                     dt_utc_norm = dt_utc_obj.strftime("%Y-%m-%d %H:%M:%S")
-                    dt_local = datetime.strftime(dt_utc_obj + timedelta(hours=timezone_offset_hours, minutes=timezone_offset_mins), "%d/%b/%Y %H:%M")
+                    dt_local = datetime.strftime(dt_utc_obj + timedelta(hours=timezone_offset_hours, minutes=timezone_offset_mins), "%Y-%m-%d %H:%M:%S")
                     title = row[6]
                     duration = 0
                     try:
@@ -2186,7 +2189,7 @@ def selenium_get_latest_streams_from_twitchtracker(streamer_name):
                             dt_local_obj = datetime.strptime(row['dt_local'], "%d/%b/%Y %H:%M")
                             dt_utc_obj = dt_local_obj - timedelta(hours=timezone_offset_hours, minutes=timezone_offset_mins)
                             dt_utc = dt_utc_obj.strftime("%Y-%m-%d %H:%M:%S")
-                            dt_local = dt_local_obj.strftime("%d/%b/%Y %H:%M")
+                            dt_local = dt_local_obj.strftime("%Y-%m-%d %H:%M:%S")
                         except Exception:
                             dt_utc = row.get('dt_utc') or ''
                             try:
