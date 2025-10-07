@@ -33,12 +33,13 @@ import zipfile
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.5.4"
+CURRENT_VERSION = "1.5.5"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
 CLI_MODE = False
 CLI_FROM_START = False
+
 
 if sys.platform == 'win32':
     try:
@@ -654,6 +655,47 @@ def fetch_vod_vod_streams(streamer_name):
         return None
 
 
+def get_datetime_from_vod_vod(url):
+    try:
+        if "streamscharts.com" in url:
+            streamer_name, stream_id = parse_streamscharts_url(url)
+        elif "twitchtracker.com" in url:
+            streamer_name, stream_id = parse_twitchtracker_url(url)
+        elif "sullygnome.com" in url:
+            streamer_name, stream_id = parse_sullygnome_url(url)
+        else:
+            return None
+        
+        response = requests.get(f"https://api.vodvod.top/channels/@{streamer_name}", headers=return_user_agent(), timeout=15)
+        
+        if response.status_code != 200:
+            return None
+            
+        data = response.json()
+        
+        if not data or not isinstance(data, list):
+            return None
+            
+        for item in data:
+            try:
+                metadata = item.get('Metadata', {})
+                found_stream_id = metadata.get('StreamID', '')
+                
+                if str(found_stream_id) == str(stream_id):
+                    start_time = metadata.get('StartTime', '')
+                    
+                    if start_time:
+                        dt_utc = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                        return dt_utc.strftime("%Y-%m-%d %H:%M:%S"), None
+                    
+            except Exception:
+                continue
+                
+        return None, None
+        
+    except Exception:
+        return None, None
+
 def merge_api_and_vod_streams(api_streams, vod_streams):
     api_streams = api_streams or []
     vod_streams = vod_streams or []
@@ -840,8 +882,9 @@ def fetch_recent_streams_api(streamer_name, max_streams=100):
         return None
 
 
-def get_latest_streams(skip_gql=False):
-    streamer_name = input("\nEnter streamer name: ").strip().lower()
+def get_latest_streams(streamer_name=None, skip_gql=False):
+    if not streamer_name:   
+        streamer_name = input("\nEnter streamer name: ").strip().lower()
     url = f"https://twitchtracker.com/{streamer_name}/streams"
     
     current_page = 1
@@ -1027,11 +1070,22 @@ def get_latest_streams(skip_gql=False):
                 current_page += 1
                 stream_info, valid_streams = display_streams(current_page)
             else:
+                if not skip_gql:
+                    get_latest_streams(streamer_name=streamer_name, skip_gql=True)
+                    return
+                else:
+                    break
+        elif choice == "4":
+            if current_page < total_pages:
+                if not skip_gql:
+                    get_latest_streams(streamer_name=streamer_name, skip_gql=True)
+                    return
+                else:
+                    break
+            else:
                 break
-        elif choice == "4" and current_page == 1:
+        elif choice == "5":
             break
-        elif choice == "5" and not skip_gql:
-            get_latest_streams(skip_gql=True)
         else:
             print("\nInvalid option. Please try again.")
 
@@ -1819,7 +1873,7 @@ def get_chunked_actual_resolution(m3u8_url):
             m3u8_url
         ]
         
-        result = subprocess.run(m3u8_command, capture_output=True, text=True, timeout=10, check=False)
+        result = subprocess.run(m3u8_command, capture_output=True, text=True, timeout=15, check=False)
         if result.returncode != 0 or not result.stdout:
             return None
         
@@ -1891,7 +1945,7 @@ def return_supported_qualities(m3u8_link):
             response = requests.get(url, timeout=20)
             if response.status_code == 200:
                 return resolution
-        except Exception:
+        except Exception as e:
             pass
         return None
 
@@ -2346,10 +2400,13 @@ def parse_streamscharts_datetime_data(bs):
 
 def parse_datetime_streamscharts(streamscharts_url, skip_gql=False):
     try:
-        # Method 1: Using gql api
+        # Method 1: Using api
         if not skip_gql:
             stream_datetime = get_stream_datetime(streamscharts_url)
             if stream_datetime and stream_datetime != (None, None):
+                return stream_datetime
+            stream_datetime = get_datetime_from_vod_vod(streamscharts_url)
+            if stream_datetime:
                 return stream_datetime
 
         # Method 2: Using requests
@@ -2386,10 +2443,13 @@ def parse_twitchtracker_datetime_data(bs):
 
 def parse_datetime_twitchtracker(twitchtracker_url, skip_gql=False):
     try:
-        # Method 1: Using gql api
+        # Method 1: Using api
         if not skip_gql:
             stream_datetime = get_stream_datetime(twitchtracker_url)
             if stream_datetime and stream_datetime != (None, None):
+                return stream_datetime
+            stream_datetime = get_datetime_from_vod_vod(twitchtracker_url)
+            if stream_datetime:
                 return stream_datetime
 
         # Method 2: Using requests
@@ -2439,12 +2499,14 @@ def parse_sullygnome_datetime_data(bs):
 
 def parse_datetime_sullygnome(sullygnome_url, skip_gql=False):
     try:
-        # Method 1: Using gql api
+        # Method 1: Using api
         if not skip_gql:
             stream_datetime = get_stream_datetime(sullygnome_url)
             if stream_datetime and stream_datetime != (None, None):
                 return stream_datetime
-
+            stream_datetime = get_datetime_from_vod_vod(sullygnome_url)
+            if stream_datetime:
+                return stream_datetime
         # Method 2: Using requests
         response = requests.get(sullygnome_url, headers=return_user_agent(), timeout=10)
         if response.status_code == 200:
