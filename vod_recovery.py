@@ -33,7 +33,7 @@ import zipfile
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.5.5"
+CURRENT_VERSION = "1.5.6"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -61,6 +61,37 @@ def return_to_main_menu():
 def read_config_by_key(config_file, key):
     script_dir = os.path.dirname(os.path.realpath(__file__))
     config_path = os.path.join(script_dir, "config", f"{config_file}.json")
+    if not os.path.exists(config_path):
+        try:
+            temp_dirs = set()
+            try:
+                temp_dirs.add(tempfile.gettempdir().lower())
+            except Exception:
+                pass
+            if os.name == "nt":
+                for env in ("TEMP", "TMP", "LOCALAPPDATA"):
+                    v = os.environ.get(env)
+                    if v:
+                        temp_dirs.add(v.lower())
+            in_temp = any(str(script_dir).lower().startswith(td) for td in temp_dirs if td)
+            looks_like_zip = ".zip" in str(script_dir).lower() or "\\zip\\" in str(script_dir).lower()
+
+            print("\n✖  Required file not found:")
+            print(f"   {config_path}")
+            if in_temp or looks_like_zip:
+                print("\nIt looks like you launched VodRecovery directly from a ZIP or a temporary folder.")
+                print("Please extract the entire VodRecovery folder first, then run vod_recovery.py (or the shortcut)")
+            else:
+                print("\nThe configuration folder is missing. Make sure you extracted the full release with the 'config' folder next to vod_recovery.py.")
+            try:
+                input("\nPress Enter to exit...")
+            except Exception:
+                pass
+            sys.exit(1)
+        except SystemExit:
+            raise
+        except Exception:
+            return None
 
     with open(config_path, "r", encoding="utf-8") as input_config_file:
         config = json.load(input_config_file)
@@ -2284,7 +2315,7 @@ def selenium_get_latest_streams_from_twitchtracker(streamer_name):
 def selenium_cleanup():
     try:
         if os.path.exists("downloaded_files"):
-            shutil.rmtree("downloaded_files")
+            shutil.rmtree("downloaded_files", ignore_errors=True)
     except Exception:
         pass
 
@@ -2406,7 +2437,7 @@ def parse_datetime_streamscharts(streamscharts_url, skip_gql=False):
             if stream_datetime and stream_datetime != (None, None):
                 return stream_datetime
             stream_datetime = get_datetime_from_vod_vod(streamscharts_url)
-            if stream_datetime:
+            if stream_datetime and stream_datetime != (None, None):
                 return stream_datetime
 
         # Method 2: Using requests
@@ -2449,7 +2480,7 @@ def parse_datetime_twitchtracker(twitchtracker_url, skip_gql=False):
             if stream_datetime and stream_datetime != (None, None):
                 return stream_datetime
             stream_datetime = get_datetime_from_vod_vod(twitchtracker_url)
-            if stream_datetime:
+            if stream_datetime and stream_datetime != (None, None):
                 return stream_datetime
 
         # Method 2: Using requests
@@ -2505,7 +2536,7 @@ def parse_datetime_sullygnome(sullygnome_url, skip_gql=False):
             if stream_datetime and stream_datetime != (None, None):
                 return stream_datetime
             stream_datetime = get_datetime_from_vod_vod(sullygnome_url)
-            if stream_datetime:
+            if stream_datetime and stream_datetime != (None, None):
                 return stream_datetime
         # Method 2: Using requests
         response = requests.get(sullygnome_url, headers=return_user_agent(), timeout=10)
@@ -3700,7 +3731,7 @@ def get_twitch_channel_from_url(twitch_url):
 
 
 def handle_live_recording_fallback(channel_name, command, output_path):
-    print(f"\033[94m\nVod Storage for this stream is likely disabled, searching for stream M3U8...\033[0m")
+    print("\033[94m\nVod Storage for this stream is likely disabled, searching for stream M3U8...\033[0m")
     
     vod_id, created_at_iso, started_at_iso = fetch_stream_data(channel_name)
     datetime_iso = created_at_iso or started_at_iso
@@ -3773,7 +3804,7 @@ def record_live_from_start(twitch_url=None):
         print(f"\n\033[92m✓ Live recording saved to {output_path}\033[0m\n")
         input("Press Enter to continue...")
         return True
-    except Exception as e:
+    except Exception:
         return handle_live_recording_fallback(channel_name, command, output_path)
 
 
@@ -4350,7 +4381,7 @@ def get_twitch_clip(clip_slug, retries=3):
             return url
 
         except (requests.exceptions.RequestException, ValueError):
-            print(f"\nRetrying...")
+            print("\nRetrying...")
             if attempt < retries - 1:
                 time.sleep(3) 
 
@@ -4559,10 +4590,7 @@ def fetch_stream_data(channel_name: str, vod_id: str = None):
                 animated_url = vod_node.get("animatedPreviewURL") or ""
                 if (preview_url and vod_id in preview_url) or (animated_url and vod_id in animated_url):
                     return vod_node.get("id"), vod_node.get("createdAt"), vod_node.get("publishedAt")
-            # 4) Broadcast Id match
-            if last_broadcast_id and str(last_broadcast_id) == str(vod_id):
-                return vod_id, None, last_broadcast_started_at
-            # print("No videos found with the given ID")
+
             return None, None, None
 
 
@@ -4578,33 +4606,36 @@ def fetch_stream_data(channel_name: str, vod_id: str = None):
 
 
 def get_stream_datetime(url: str):
-    channel_name = None
-    vod_id = None
-    if "twitchtracker.com" not in url:
-        converted_url = convert_url(url, "twitchtracker")
-    else:
-        converted_url = url
+    try:    
+        channel_name = None
+        vod_id = None
+        if "twitchtracker.com" not in url:
+            converted_url = convert_url(url, "twitchtracker")
+        else:
+            converted_url = url
 
-    url_match = re.search(r"twitchtracker\.com/([^/\s]+)/streams(?:/(\d+))?", converted_url, re.IGNORECASE)
-    if url_match:
-        channel_name = url_match.group(1)
-        vod_id = url_match.group(2) if url_match.lastindex and url_match.lastindex >= 2 else None
+        url_match = re.search(r"twitchtracker\.com/([^/\s]+)/streams(?:/(\d+))?", converted_url, re.IGNORECASE)
+        if url_match:
+            channel_name = url_match.group(1)
+            vod_id = url_match.group(2) if url_match.lastindex and url_match.lastindex >= 2 else None
 
-    if not channel_name:
+        if not channel_name:
+            return None, None
+
+        broadcast_id, created_at_iso, started_at_iso = fetch_stream_data(channel_name, vod_id)
+        
+        if not broadcast_id and not created_at_iso:
+            return None, None
+
+        datetime_iso = created_at_iso or started_at_iso
+        if datetime_iso:
+            formatted = format_iso_datetime(datetime_iso)
+            return formatted, None
+
         return None, None
-
-    broadcast_id, created_at_iso, started_at_iso = fetch_stream_data(channel_name, vod_id)
-    
-    if not broadcast_id and not created_at_iso:
+    except Exception as e:
+        print(f"Error fetching stream data: {e}")
         return None, None
-
-    datetime_iso = created_at_iso or started_at_iso
-    if datetime_iso:
-        formatted = format_iso_datetime(datetime_iso)
-        return formatted, None
-
-    return None, None
-
 
 def run_vod_recover():
     print("\nWELCOME TO VOD RECOVERY!")
