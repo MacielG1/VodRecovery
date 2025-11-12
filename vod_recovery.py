@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from tkinter import filedialog
 import shutil
 from urllib.parse import urlparse
+from pathlib import Path
 from unicodedata import normalize
 import asyncio
 import aiohttp
@@ -33,7 +34,7 @@ import zipfile
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.5.6"
+CURRENT_VERSION = "1.5.7"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -802,7 +803,7 @@ def fetch_recent_streams_api(streamer_name, max_streams=100):
             "https://gql.twitch.tv/gql",
             json=payload,
             headers={
-                "Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko",
+                "Client-ID": "ue6666qo983tsx6so1t0vnawi233wa",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "User-Agent": "Mozilla/5.0",
@@ -1833,7 +1834,6 @@ async def fetch_status(session, url, retries=5, timeout=30):
                             return url
         except asyncio.TimeoutError:
             if attempt == retries - 1:
-                 # print(f"\nTimeout Error on final attempt for {url}")
                 pass
         except Exception as e:
             pass
@@ -2601,7 +2601,7 @@ def unmute_vod(m3u8_link):
         video_file.truncate()
     
     if is_muted:
-        print(f"{os.path.normpath(video_filepath)} has been unmuted!\n")
+        print(f"{os.path.normpath(video_filepath)} has been processed!\n")
 
 
 def mark_invalid_segments_in_playlist(m3u8_link):
@@ -2650,14 +2650,39 @@ def return_m3u8_duration(m3u8_link):
 
 def check_if_unmuted_is_playable(m3u8_source):
     try:
-        ffprobe_command = f'{get_ffprobe_path()} -protocol_whitelist file,http,https,tcp,tls,crypto -i "{m3u8_source}"'
-        result = subprocess.run(ffprobe_command, shell=True, check=False, capture_output=True, text=True)
-        output = result.stderr
+        async def run_ffprobe():
+            ffprobe_path = get_ffprobe_path()
+            cmd = [
+                ffprobe_path,
+                '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+                '-i', m3u8_source
+            ]
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=20)
+                return stderr.decode('utf-8', errors='ignore')
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                raise subprocess.TimeoutExpired(cmd, 20)
+        
+        output = asyncio.run(run_ffprobe())
+        
         if "Error" in output:
             print("Video is not playable after unmuting, using original m3u8 instead\n")
             return False
         else:
             return True
+            
+    except (asyncio.TimeoutError, subprocess.TimeoutExpired):
+        print("ffprobe check timed out, using original m3u8 instead\n")
+        return False
     except Exception as e:
         print(f"Error checking if unmuted is playable: {e}")
         return False
@@ -2668,7 +2693,7 @@ def process_m3u8_configuration(m3u8_link, skip_check=False):
 
     m3u8_source = None
     if is_video_muted(m3u8_link):
-        print("Video contains muted segments")
+        print("Video contains muted/invalid segments")
         if read_config_by_key("settings", "UNMUTE_VIDEO"):
             unmute_vod(m3u8_link)
             m3u8_source = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link),parse_video_id_from_m3u8_link(m3u8_link),)
@@ -2686,7 +2711,14 @@ def process_m3u8_configuration(m3u8_link, skip_check=False):
 
     if check_segments:
         print("Checking valid segments...")
-        asyncio.run(validate_playlist_segments(playlist_segments))
+        try:
+            async def validate_with_timeout():
+                return await asyncio.wait_for(validate_playlist_segments(playlist_segments), timeout=60)
+            asyncio.run(validate_with_timeout())
+        except asyncio.TimeoutError:
+            print("Segment validation timed out. Continuing without validation...")
+        except Exception as e:
+            print(f"Segment validation failed: {e}. Continuing without validation...")
     return m3u8_source
 
 
@@ -3330,17 +3362,18 @@ def get_ffprobe_path():
 
 
 def get_yt_dlp_path():
+    command = [sys.executable, "-m", "pip", "install", "-U", "--pre", "yt-dlp[default]", "--quiet"]
+    try:
+        subprocess.run(command, check=True)
+    except Exception as e:
+        print("Warning: Could not update yt-dlp to nightly version, using existing installation.")
+        print(f"Error: {e}")
+    
     try:
         if (subprocess.run(["yt-dlp", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0):
             return "yt-dlp"
     except Exception:
-        command = [sys.executable, "-m", "pip", "install", "yt-dlp", "--upgrade", "--quiet"]
-        try:
-            subprocess.run(command, check=True)
-            print("yt-dlp installed successfully!")
-            return "yt-dlp"
-        except Exception:
-            sys.exit("yt-dlp not installed! Please install yt-dlp and try again.")
+        sys.exit("yt-dlp not installed! Please install yt-dlp and try again.")
 
 
 def get_short_filename(filename):
@@ -3578,10 +3611,21 @@ def download_m3u8_video_url(m3u8_link, output_filename, from_start=False):
         if downloader == "ffmpeg" and get_use_progress_bar():
             handle_progress_bar(command, output_filename, m3u8_link)
         else:
-            subprocess.run(command, shell=True, check=True)
+            subprocess.run(command, check=True)
         return True
-    except Exception:
-        handle_retry_command(command)
+    except Exception as e:
+        if downloader == "ffmpeg" and get_use_progress_bar():
+            try:
+                retry_cmd = ' '.join(f'"{part}"' if ' ' in part else part for part in command)
+                subprocess.run(retry_cmd, shell=True, check=True)
+                if os.path.exists(output_path):
+                    return True
+            except Exception:
+                pass
+        retry_success = handle_retry_command(command)
+        if retry_success and os.path.exists(output_path):
+            return True
+        return False
 
 
 def download_m3u8_video_url_slice(m3u8_link, output_filename, video_start_time, video_end_time):
@@ -3626,10 +3670,21 @@ def download_m3u8_video_url_slice(m3u8_link, output_filename, video_start_time, 
         if downloader == "ffmpeg" and get_use_progress_bar():
             handle_progress_bar(command, output_filename, m3u8_link, video_start_time, video_end_time)
         else:
-            subprocess.run(command, shell=True, check=True)
+            subprocess.run(command, check=True)
         return True
-    except Exception:
-        handle_retry_command(command)
+    except Exception as e:
+        if downloader == "ffmpeg" and get_use_progress_bar():
+            try:
+                retry_cmd = ' '.join(f'"{part}"' if ' ' in part else part for part in command)
+                subprocess.run(retry_cmd, shell=True, check=True)
+                if os.path.exists(output_path):
+                    return True
+            except Exception:
+                pass
+        retry_success = handle_retry_command(command)
+        if retry_success and os.path.exists(output_path):
+            return True
+        return False
 
 
 def download_m3u8_video_file(m3u8_file_path, output_filename):    
@@ -3637,7 +3692,12 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
     handle_file_already_exists(output_path)
 
     downloader = get_default_downloader()
-
+    
+    if downloader == "yt-dlp":
+        if os.name == 'nt' and m3u8_file_path.startswith('\\\\'):
+            m3u8_file_path = 'file://' + m3u8_file_path.replace('\\', '/')
+        else:
+            m3u8_file_path = Path(m3u8_file_path).resolve().as_uri()
 
     if downloader == "ffmpeg":
         command = [
@@ -3653,10 +3713,6 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
             "-y", output_path,
         ]
     elif downloader == "yt-dlp":
-        if os.name == 'nt':  # For Windows
-            m3u8_file_path = f"file:\\\\{m3u8_file_path}"
-        else:  # For Linux and macOS
-            m3u8_file_path = f"file://{m3u8_file_path}"
         command = [
             get_yt_dlp_path(),
             "--enable-file-urls",
@@ -3673,10 +3729,21 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
         if downloader == "ffmpeg" and get_use_progress_bar():
             handle_progress_bar(command, output_filename, m3u8_file_path)
         else:
-            subprocess.run(command, shell=True, check=True)
+            subprocess.run(command, check=True)
         return True
-    except Exception:
-        handle_retry_command(command)
+    except Exception as e:
+        if downloader == "ffmpeg" and get_use_progress_bar():
+            try:
+                retry_cmd = ' '.join(f'"{part}"' if ' ' in part else part for part in command)
+                subprocess.run(retry_cmd, shell=True, check=True)
+                if os.path.exists(output_path):
+                    return True
+            except Exception:
+                pass
+        retry_success = handle_retry_command(command)
+        if retry_success and os.path.exists(output_path):
+            return True
+        return False
 
 
 def download_m3u8_video_file_slice(m3u8_file_path, output_filename, video_start_time, video_end_time):
@@ -3713,10 +3780,21 @@ def download_m3u8_video_file_slice(m3u8_file_path, output_filename, video_start_
         if get_use_progress_bar():
             handle_progress_bar(command, output_filename, m3u8_file_path, video_start_time, video_end_time)
         else:
-            subprocess.run(command, shell=True, check=True)
+            subprocess.run(command, check=True)
         return True
-    except Exception:
-        handle_retry_command(command)
+    except Exception as e:
+        if get_use_progress_bar():
+            try:
+                retry_cmd = ' '.join(f'"{part}"' if ' ' in part else part for part in command)
+                subprocess.run(retry_cmd, shell=True, check=True)
+                if os.path.exists(output_path):
+                    return True
+            except Exception:
+                pass
+        retry_success = handle_retry_command(command)
+        if retry_success and os.path.exists(output_path):
+            return True
+        return False
 
 
 def get_twitch_channel_from_url(twitch_url):
@@ -3759,7 +3837,7 @@ def handle_live_recording_fallback(channel_name, command, output_path):
             command.remove("--live-from-start")
         
         try:
-            subprocess.run(command, shell=True, check=True)
+            subprocess.run(command, check=True)
             print(f"\n\033[92m\u2713 Live recording saved to {output_path}\033[0m\n")
             input("Press Enter to continue...")
             return True
@@ -3800,7 +3878,7 @@ def record_live_from_start(twitch_url=None):
     print("\nCommand: " + " ".join(command) + "\n")
     
     try:
-        subprocess.run(command, shell=True, check=True)
+        subprocess.run(command, check=True)
         print(f"\n\033[92m✓ Live recording saved to {output_path}\033[0m\n")
         input("Press Enter to continue...")
         return True
@@ -3829,7 +3907,7 @@ def wait_and_record_stream(twitch_url=None):
 
     print("\nCommand: " + " ".join(command) + "\n")
     try:
-        subprocess.run(command, shell=True, check=True)
+        subprocess.run(command, check=True)
         print(f"\n\033[92m✓ Recording saved to {output_path}\033[0m\n")
         input("Press Enter to continue...")
         return True
@@ -3874,7 +3952,7 @@ def record_live_cli(twitch_url, from_start=False):
     print("\nCommand: " + " ".join(command) + "\n")
 
     try:
-        subprocess.run(command, shell=True, check=True)
+        subprocess.run(command, check=True)
         print(f"\n\033[92m Live recording saved to {output_path}\033[0m\n")
     except Exception as exc:
         raise SystemExit(f"Error: Live recording failed ({exc}).") from exc
@@ -4261,7 +4339,7 @@ def fetch_twitch_data(vod_id, retries=3, delay=5):
                     "query": f'query {{ video(id: "{vod_id}") {{ title, broadcastType, createdAt, seekPreviewsURL, owner {{ login }} }} }}'
                 },
                 headers={
-                    "Client-Id": "kimne78kx3ncx6brgo4mv6wki5h1ko",
+                    "Client-Id": "ue6666qo983tsx6so1t0vnawi233wa",
                     "Accept": "application/json",
                     "Content-Type": "application/json",
                 },
@@ -4349,19 +4427,19 @@ def get_twitch_clip(clip_slug, retries=3):
     url_endpoint = "https://gql.twitch.tv/gql"
     data = [
         {
-            "operationName": "ClipsDownloadButton",
+            "operationName": "ShareClipRenderStatus",
             "variables": {
                 "slug": clip_slug,
             },
             "extensions": {
                 "persistedQuery": {
                     "version": 1,
-                    "sha256Hash": "6e465bb8446e2391644cf079851c0cb1b96928435a240f07ed4b240f0acc6f1b",
+                    "sha256Hash": "1844261bb449fa51e6167040311da4a7a5f1c34fe71c71a3e0c4f551bc30c698",
                 }
             },
         }
     ]
-    headers = {"Client-Id": "kimne78kx3ncx6brgo4mv6wki5h1ko"}
+    headers = {"Client-Id": "ue6666qo983tsx6so1t0vnawi233wa"}
     
     for attempt in range(retries):
         try:
@@ -4548,7 +4626,7 @@ def fetch_stream_data(channel_name: str, vod_id: str = None):
             "https://gql.twitch.tv/gql",
             json=payload,
             headers={
-                "Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko",
+                "Client-ID": "ue6666qo983tsx6so1t0vnawi233wa",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "User-Agent": "Mozilla/5.0",
@@ -4709,8 +4787,8 @@ def run_vod_recover():
                     url = print_get_m3u8_link_menu()
                     is_muted = is_video_muted(url)
                     if is_muted:
-                        print("\nVideo contains muted segments")
-                        if get_yes_no_choice("Do you want to unmute the video?"):
+                        print("\nVideo contains muted/invalid segments")
+                        if get_yes_no_choice("Do you want to unmute the video so it can be played in media players?"):
                             print()
                             unmute_vod(url)
                             input("Press Enter to continue...")
