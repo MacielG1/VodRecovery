@@ -34,7 +34,7 @@ import zipfile
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.5.7"
+CURRENT_VERSION = "1.5.8"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -2687,6 +2687,7 @@ def check_if_unmuted_is_playable(m3u8_source):
         print(f"Error checking if unmuted is playable: {e}")
         return False
 
+
 def process_m3u8_configuration(m3u8_link, skip_check=False):
     playlist_segments = get_all_playlist_segments(m3u8_link)
     check_segments = read_config_by_key("settings", "CHECK_SEGMENTS") and not skip_check
@@ -3195,27 +3196,17 @@ def random_clip_recovery(video_id, hours, minutes):
                 break
 
 
-async def validate_clip(session, url, streamer_name, video_id):
-    try:
-        async with session.head(url, timeout=30) as response:
-            if response.status == 200:
-                write_text_file(response.url, get_log_filepath(streamer_name, video_id))
-                return response.url
-    except Exception:
-        return None
-
-
-async def bulk_clip_recovery():
-    vod_counter, total_counter, valid_counter, iteration_counter = 0, 0, 0, 0
+def bulk_clip_recovery():
+    vod_counter = 0
     streamer_name, csv_file_path = "", ""
 
     bulk_recovery_option = print_bulk_clip_recovery_menu()
     if bulk_recovery_option == "1":
         csv_file_path = get_and_validate_csv_filename()
-        streamer_name = parse_streamer_from_csv_filename(csv_file_path)
+        streamer_name = parse_streamer_from_csv_filename(csv_file_path).lower()
     elif bulk_recovery_option == "2":
         csv_directory = input("Enter the full path where the sullygnome csv files exist: ").replace('"', "")
-        streamer_name = input("Enter the streamer's name: ")
+        streamer_name = input("Enter the streamer's name: ").lower()
         if get_yes_no_choice("Do you want to merge the CSV files in the directory?"):
             merge_csv_files(streamer_name, csv_directory)
             csv_file_path = os.path.join(csv_directory, f"{streamer_name.title()}_MERGED.csv")
@@ -3228,75 +3219,60 @@ async def bulk_clip_recovery():
     clip_format = print_clip_format_menu().split(" ")
     stream_info_dict = parse_clip_csv_file(csv_file_path)
 
-    connector = aiohttp.TCPConnector(limit=200, force_close=True, enable_cleanup_closed=True)
-    timeout = aiohttp.ClientTimeout(total=15, connect=10)
-    
+    request_session = requests.Session()
     max_retries = 3
-    retry_count = 0
+
+    def check_url(url):
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = request_session.head(url, timeout=20)
+                return url, response.status_code
+            except Exception:
+                if attempt < max_retries:
+                    time.sleep(0.5)
+                else:
+                    return url, None
+
+    for video_id, values in stream_info_dict.items():
+        vod_counter += 1
+        iteration_counter, valid_counter = 0, 0
+        
+        print(f"\nProcessing Past Broadcast:\n" 
+              f"Stream Date: {values[0].replace('-', ' ')}\n" 
+              f"Vod ID: {video_id}\n" 
+              f"Vod Number: {vod_counter} of {len(stream_info_dict)}\n")
+        
+        full_url_list = get_all_clip_urls(get_clip_format(video_id, values[1]), clip_format)
+        print("Searching...")
+
+        with ThreadPoolExecutor(max_workers=100) as executor:
+            future_to_url = {executor.submit(check_url, url): url for url in full_url_list}
+            for future in as_completed(future_to_url):
+                iteration_counter += 1
+                url, status = future.result()
+                print(f"\rSearching for clips... {iteration_counter} of {len(full_url_list)}", end=" ", flush=True)
+                if status == 200:
+                    valid_counter += 1
+                    write_text_file(url, get_log_filepath(streamer_name, video_id))
+                    print(f"- {valid_counter} Clip(s) Found", end=" ")
+                else:
+                    print(f"- {valid_counter} Clip(s) Found", end=" ")
+
+        print(f"\n\033[92m{valid_counter} Clip(s) Found\033[0m\n")
+
+        if valid_counter != 0:
+            if get_yes_no_choice("Do you want to download all clips recovered?"):
+                download_clips(get_default_directory(), streamer_name, video_id)
+                os.remove(get_log_filepath(streamer_name, video_id))
+            else:
+                if not get_yes_no_choice("\nWould you like to keep the log file containing links to the recovered clips?"):
+                    os.remove(get_log_filepath(streamer_name, video_id))
+                else:
+                    print("\nRecovered links saved to " + get_log_filepath(streamer_name, video_id))
+        else:
+            if len(stream_info_dict) > vod_counter:
+                print("No clips found!... Moving on to next vod.")
     
-    while retry_count < max_retries:
-        try:
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-                for video_id, values in stream_info_dict.items():
-                    vod_counter += 1
-                    print(f"\nProcessing Past Broadcast:\n" 
-                          f"Stream Date: {values[0].replace('-', ' ')}\n" 
-                          f"Vod ID: {video_id}\n" 
-                          f"Vod Number: {vod_counter} of {len(stream_info_dict)}\n")
-                    original_vod_url_list = get_all_clip_urls(get_clip_format(video_id, values[1]), clip_format)
-                    print("Searching...")
-
-                    batch_size = 500
-                    for i in range(0, len(original_vod_url_list), batch_size):
-                        batch = original_vod_url_list[i:i + batch_size]
-                        tasks = []
-                        for url in batch:
-                            try:
-                                tasks.append(asyncio.create_task(validate_clip(session, url, streamer_name, video_id)))
-                            except Exception:
-                                continue
-                        
-                        if not tasks:
-                            continue
-
-                        try:
-                            results = await asyncio.gather(*tasks, return_exceptions=True)
-                            for result in results:
-                                total_counter += 1
-                                iteration_counter += 1
-                                if iteration_counter % 100 == 0 or iteration_counter == len(original_vod_url_list):
-                                    print(f"\rSearching for clips... {iteration_counter} of {len(original_vod_url_list)}", end=" ", flush=True)
-                                if result and not isinstance(result, Exception):
-                                    valid_counter += 1
-                        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
-                            print(f"\nError in batch (continuing anyway): {str(e)}")
-                            continue
-
-                    print(f"\n\033[92m{valid_counter} Clip(s) Found\033[0m\n")
-
-                    if valid_counter != 0:
-                        if get_yes_no_choice("Do you want to download all clips recovered?"):
-                            download_clips(get_default_directory(), streamer_name, video_id)
-                            os.remove(get_log_filepath(streamer_name, video_id))
-                        else:
-                            if not get_yes_no_choice("\nWould you like to keep the log file containing links to the recovered clips?"):
-                                os.remove(get_log_filepath(streamer_name, video_id))
-                            else:
-                                print("\nRecovered links saved to " + get_log_filepath(streamer_name, video_id))
-                    else:
-                        if len(stream_info_dict) > vod_counter:
-                            print("No clips found!... Moving on to next vod.")
-                    total_counter, valid_counter, iteration_counter = 0, 0, 0
-                input("Press Enter to continue...")
-                return 
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
-            retry_count += 1
-            if retry_count >= max_retries:
-                print(f"\nFailed after {max_retries} attempts. Please restart the program.")
-                break
-            print(f"\nError occurred (attempt {retry_count}/{max_retries}): {str(e)}")
-            await asyncio.sleep(1)
-
     input("\nPress Enter to continue...")
 
 
@@ -4751,7 +4727,7 @@ def run_vod_recover():
                     clip_url = print_get_twitch_clip_url_menu()
                     handle_twitch_clip(clip_url)
                 elif clip_type == 4:
-                    asyncio.run(bulk_clip_recovery())
+                    bulk_clip_recovery()
                 elif clip_type == 5:
                     continue
             elif menu == 3:
@@ -4869,8 +4845,3 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             print("\n\nExiting...")
             os._exit(0)
-
-
-
-
-
