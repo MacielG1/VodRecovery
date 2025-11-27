@@ -46,6 +46,9 @@ python vod_recovery.py --url https://www.twitch.tv/streamer --watch
 python vod_recovery.py --url https://www.twitch.tv/streamer
 python vod_recovery.py --url https://www.twitch.tv/streamer --from-start
 python vod_recovery.py --clip https://twitch.tv/streamer/clip/1234567890
+python vod_recovery.py --m3u8 "https://example.com/index-dvr.m3u8"
+python vod_recovery.py --m3u8 "https://example.com/index-dvr.m3u8" --start 00:10:00 --end 00:20:00
+python vod_recovery.py --m3u8 "https://example.com/index-dvr.m3u8" --watch
 ```
 
 - **URL downloads** `--url <link>` supports Twitch, TwitchTracker, Streamscharts, and SullyGnome pages.
@@ -53,6 +56,7 @@ python vod_recovery.py --clip https://twitch.tv/streamer/clip/1234567890
 - **Record from live** Add `--from-start` to begin capturing a live channel from the start.
 - **Watch live stream** Add `--watch` to watch the live stream in VLC.
 - **Clips** Use `--clip <url>` for direct clip retrieval.
+- **Direct M3U8** Use `--m3u8 <m3u8_url>` to download, trim, or watch directly from an M3U8 URL.
 
 ## 📜Notes
 

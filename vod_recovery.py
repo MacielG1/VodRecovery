@@ -34,12 +34,12 @@ import zipfile
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.5.8"
+CURRENT_VERSION = "1.5.9"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
 CLI_MODE = False
-CLI_FROM_START = False
+CLI_DOWNLOAD_FROM_START = False
 
 
 if sys.platform == 'win32':
@@ -728,6 +728,7 @@ def get_datetime_from_vod_vod(url):
     except Exception:
         return None, None
 
+
 def merge_api_and_vod_streams(api_streams, vod_streams):
     api_streams = api_streams or []
     vod_streams = vod_streams or []
@@ -924,8 +925,24 @@ def get_latest_streams(streamer_name=None, skip_gql=False):
     print("\nSearching for streams...")
     streams = None
     if not skip_gql:
-        api_streams = fetch_recent_streams_api(streamer_name)
-        vod_streams = fetch_vod_vod_streams(streamer_name)
+        def fetch_with_retry(func, *args):
+            for _ in range(3):
+                try:
+                    res = func(*args)
+                    if res:
+                        return res
+                except Exception:
+                    pass
+                time.sleep(1)
+            return None
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_api = executor.submit(fetch_with_retry, fetch_recent_streams_api, streamer_name)
+            future_vod = executor.submit(fetch_with_retry, fetch_vod_vod_streams, streamer_name)
+            
+            api_streams = future_api.result()
+            vod_streams = future_vod.result()
+
         streams = merge_api_and_vod_streams(api_streams, vod_streams)
 
     if streams:
@@ -1759,7 +1776,6 @@ def manual_vod_recover():
 
     m3u8_source = process_m3u8_configuration(m3u8_link)
     handle_download_menu(m3u8_source)
-
 
 
 def handle_vod_recover(url, url_parser, datetime_parser, website_name):
@@ -3233,6 +3249,18 @@ def bulk_clip_recovery():
                 else:
                     return url, None
 
+    should_download = read_config_by_key("settings", "AUTO_DOWNLOAD_CLIPS")
+    if not should_download:
+        should_download = get_yes_no_choice("Do you want to download all clips recovered?")
+
+    should_keep_logs = False
+    if not should_download:
+        remove_log_file = read_config_by_key("settings", "REMOVE_LOG_FILE")
+        if remove_log_file is not None:
+            should_keep_logs = not remove_log_file
+        else:
+            should_keep_logs = get_yes_no_choice("Would you like to keep the log files containing links to the recovered clips?")
+
     for video_id, values in stream_info_dict.items():
         vod_counter += 1
         iteration_counter, valid_counter = 0, 0
@@ -3261,11 +3289,11 @@ def bulk_clip_recovery():
         print(f"\n\033[92m{valid_counter} Clip(s) Found\033[0m\n")
 
         if valid_counter != 0:
-            if get_yes_no_choice("Do you want to download all clips recovered?"):
+            if should_download:
                 download_clips(get_default_directory(), streamer_name, video_id)
                 os.remove(get_log_filepath(streamer_name, video_id))
             else:
-                if not get_yes_no_choice("\nWould you like to keep the log file containing links to the recovered clips?"):
+                if not should_keep_logs:
                     os.remove(get_log_filepath(streamer_name, video_id))
                 else:
                     print("\nRecovered links saved to " + get_log_filepath(streamer_name, video_id))
@@ -3292,6 +3320,7 @@ def download_clips(directory, streamer_name, video_id):
                 file_name = f"{streamer_name.title()}_{video_id}_{offset}{get_default_video_format()}"
                 try:
                     with open(os.path.join(download_directory, file_name), "wb") as x:
+                        print(f"Downloaded: {file_name}")
                         x.write(response.content)
                 except ValueError:
                     print(f"Failed to download... {response.url}")
@@ -3555,7 +3584,7 @@ def download_m3u8_video_url(m3u8_link, output_filename, from_start=False):
 
         is_live = is_m3u8_live(m3u8_link)
 
-        if CLI_MODE and CLI_FROM_START:
+        if CLI_MODE and CLI_DOWNLOAD_FROM_START:
             from_start = True
 
         if is_live:
@@ -4304,7 +4333,6 @@ def extract_id_from_url(url: str):
     return extract_id_from_url(url)
 
 
-
 def fetch_twitch_data(vod_id, retries=3, delay=5):
     attempt = 0
     while attempt < retries:
@@ -4376,7 +4404,7 @@ def twitch_recover(link=None):
 
     if is_twitch_livestream_url(url):
         if CLI_MODE:
-            return record_live_cli(url, CLI_FROM_START)
+            return record_live_cli(url, CLI_DOWNLOAD_FROM_START)
         return record_live_menu(url)
     
     vod_id = extract_id_from_url(url)
@@ -4420,7 +4448,7 @@ def get_twitch_clip(clip_slug, retries=3):
     for attempt in range(retries):
         try:
             response_endpoint = requests.post(url_endpoint, json=data, headers=headers, timeout=30)
-            response_endpoint.raise_for_status()  # Raise an error for bad responses
+            response_endpoint.raise_for_status()
             response = response_endpoint.json()
 
             if "error" in response or "errors" in response:
@@ -4478,7 +4506,7 @@ def _validate_cli_time(value, label):
 
 
 def download_url_cli(args):
-    global CLI_FROM_START
+    global CLI_DOWNLOAD_FROM_START
     url = (args.url or "").strip()
     if not url:
         raise SystemExit("Error: --url requires a valid URL.")
@@ -4549,25 +4577,71 @@ def download_url_cli(args):
             return
 
         if start_time and end_time:
-            previous_flag = CLI_FROM_START
-            CLI_FROM_START = from_start_flag
+            previous_flag = CLI_DOWNLOAD_FROM_START
+            CLI_DOWNLOAD_FROM_START = from_start_flag
             try:
                 success = handle_vod_url_trim(m3u8_source, title=title, stream_date=stream_datetime, start_time=start_time, end_time=end_time)
             finally:
-                CLI_FROM_START = previous_flag
+                CLI_DOWNLOAD_FROM_START = previous_flag
         else:
-            previous_flag = CLI_FROM_START
-            CLI_FROM_START = from_start_flag
+            previous_flag = CLI_DOWNLOAD_FROM_START
+            CLI_DOWNLOAD_FROM_START = from_start_flag
             try:
                 success = handle_vod_url_normal(m3u8_source, title=title, stream_date=stream_datetime)
             finally:
-                CLI_FROM_START = previous_flag
+                CLI_DOWNLOAD_FROM_START = previous_flag
 
         if not success:
             raise SystemExit("Error: Download failed.")
 
     except ReturnToMain:
         raise SystemExit("Error: Unable to process URL.")
+
+
+def download_m3u8_cli(args):
+
+    m3u8_url = (getattr(args, "m3u8", None) or "").strip()
+    if not m3u8_url:
+        raise SystemExit("Error: --m3u8 requires a valid M3U8 URL.")
+
+    if args.url or args.clip_url:
+        raise SystemExit("Error: --m3u8 cannot be combined with --url or --clip.")
+
+    start_time = args.start_time.strip() if args.start_time else None
+    end_time = args.end_time.strip() if args.end_time else None
+    watch_mode = bool(getattr(args, "watch", False))
+
+    if (start_time and not end_time) or (end_time and not start_time):
+        raise SystemExit("Error: --start and --end must be provided together.")
+
+    if watch_mode and (start_time or end_time):
+        raise SystemExit("Error: --watch cannot be combined with --start/--end.")
+
+    _validate_cli_time(start_time, "--start")
+    _validate_cli_time(end_time, "--end")
+
+    if not (m3u8_url.startswith("http://") or m3u8_url.startswith("https://")):
+        m3u8_url = "https://" + m3u8_url
+
+    print("Processing URL...")
+    m3u8_source = process_m3u8_configuration(m3u8_url)
+    if not m3u8_source:
+        raise SystemExit("Error: Unable to prepare M3U8 source.")
+
+    if watch_mode:
+        play_m3u8_with_vlc(m3u8_source)
+        return
+
+    title = None
+    stream_datetime = None
+
+    if start_time and end_time:
+        success = handle_vod_url_trim(m3u8_source, title=title, stream_date=stream_datetime, start_time=start_time, end_time=end_time)
+    else:
+        success = handle_vod_url_normal(m3u8_source, title=title, stream_date=stream_datetime)
+
+    if not success:
+        raise SystemExit("Error: Download failed.")
 
 
 def fetch_stream_data(channel_name: str, vod_id: str = None):
@@ -4821,6 +4895,7 @@ def run_vod_recover():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VodRecovery CLI")
     parser.add_argument("--url", dest="url", help="Download VOD from Twitch/TwitchTracker/Streamscharts/SullyGnome URL")
+    parser.add_argument("--m3u8", dest="m3u8", help="Download VOD directly from an M3U8 URL")
     parser.add_argument("--clip", dest="clip_url", help="Download Twitch clip by URL")
     parser.add_argument("--start", dest="start_time", help="Trim start time HH:MM:SS for VOD download")
     parser.add_argument("--end", dest="end_time", help="Trim end time HH:MM:SS for VOD download")
@@ -4829,11 +4904,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if any([args.url, args.clip_url]):
+    if any([args.url, args.clip_url, getattr(args, "m3u8", None)]):
         try:
             CLI_MODE = True
             if args.clip_url:
                 handle_twitch_clip(args.clip_url)
+            elif getattr(args, "m3u8", None):
+                download_m3u8_cli(args)
             elif args.url:
                 download_url_cli(args)
         except KeyboardInterrupt:
