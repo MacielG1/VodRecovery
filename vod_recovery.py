@@ -34,7 +34,8 @@ import zipfile
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.5.9"
+
+CURRENT_VERSION = "1.5.10"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -318,9 +319,10 @@ def print_options_menu():
         f"2) Set Download Directory \033[94m({get_default_directory() or '~/Downloads/'})\033[0m",
         f"3) Set Default Downloader \033[94m({read_config_by_key('settings', 'DEFAULT_DOWNLOADER') or 'ffmpeg'})\033[0m",
         "4) Check for Updates",
-        "5) Open settings.json File",
-        "6) Help",
-        "7) Return",
+        "5) Update yt-dlp",
+        "6) Open settings.json File",
+        "7) Help",
+        "8) Return",
     ]
     while True:
         print("\n".join(options_menu))
@@ -3367,18 +3369,33 @@ def get_ffprobe_path():
 
 
 def get_yt_dlp_path():
-    command = [sys.executable, "-m", "pip", "install", "-U", "--pre", "yt-dlp[default]", "--quiet"]
-    try:
-        subprocess.run(command, check=True)
-    except Exception as e:
-        print("Warning: Could not update yt-dlp to nightly version, using existing installation.")
-        print(f"Error: {e}")
-    
     try:
         if (subprocess.run(["yt-dlp", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0):
             return "yt-dlp"
     except Exception:
-        sys.exit("yt-dlp not installed! Please install yt-dlp and try again.")
+        command = [sys.executable, "-m", "pip", "install", "yt-dlp", "--upgrade", "-q", "--disable-pip-version-check"]
+
+        try:
+            subprocess.run(command, check=True)
+            return "yt-dlp"
+        except Exception:
+            sys.exit("yt-dlp not installed! Please install yt-dlp and try again.")
+
+
+def update_yt_dlp():
+    print("\nUpdating yt-dlp to nightly version...")
+    command = [sys.executable, "-m", "pip", "install", "-U", "--pre", "yt-dlp[default]"]
+    try:
+        subprocess.run(command, check=True)
+    except Exception as e:
+        print(f"\n✖  Could not update yt-dlp to nightly: {e}")
+        print("\nAttempting to update to stable version...\n")
+        try:
+            command_stable = [sys.executable, "-m", "pip", "install", "-U", "yt-dlp[default]"]
+            subprocess.run(command_stable, check=True)
+        except Exception as e_stable:
+            print(f"\n✖  Could not update yt-dlp: {e_stable}")
+    input("\nPress Enter to continue...")
 
 
 def get_short_filename(filename):
@@ -4870,6 +4887,8 @@ def run_vod_recover():
                     elif options_choice == 4:
                         check_for_updates()
                     elif options_choice == 5:
+                        update_yt_dlp()
+                    elif options_choice == 6:
                         script_dir = get_script_directory()
                         config_file_path = os.path.join(script_dir, "config", "settings.json")
                         if os.path.exists(config_file_path):
@@ -4878,10 +4897,10 @@ def run_vod_recover():
                             input("\nPress Enter to continue...")
                         else:
                             print("File not found!")
-                    elif options_choice == 6:
+                    elif options_choice == 7:
                         print_help()
                         input("Press Enter to continue...")
-                    elif options_choice == 7:
+                    elif options_choice == 8:
                         break
             elif menu == 8:
                 print("\nExiting...\n")
