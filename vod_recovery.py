@@ -35,7 +35,7 @@ logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
 
-CURRENT_VERSION = "1.5.13"
+CURRENT_VERSION = "1.5.14"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -205,33 +205,15 @@ def print_video_mode_menu():
 def print_clip_type_menu():
     clip_type_options = [
         "1) Recover All Clips from a VOD",
-        "2) Find Random Clips from a VOD",
-        "3) Download Clip from Twitch URL",
-        "4) Bulk Recover Clips from SullyGnome CSV Export",
-        "5) Return",
+        "2) Download Clip from Twitch URL",
+        "3) Bulk Recover Clips from SullyGnome CSV Export",
+        "4) Return",
     ]
     while True:
         print("\n".join(clip_type_options))
         try:
             choice = int(input("\nSelect Clip Recovery Type: "))
             if choice not in range(1, len(clip_type_options) + 1):
-                raise ValueError("Invalid option")
-            return choice
-        except ValueError:
-            print("\n✖  Invalid option! Please try again:\n")
-
-
-def print_clip_recovery_menu():
-    clip_recovery_options = [
-        "1) Website Clip Recovery",
-        "2) Manual Clip Recovery",
-        "3) Return",
-    ]
-    while True:
-        print("\n".join(clip_recovery_options))
-        try:
-            choice = int(input("\nSelect Clip Recovery Method: "))
-            if choice not in range(1, len(clip_recovery_options) + 1):
                 raise ValueError("Invalid option")
             return choice
         except ValueError:
@@ -446,23 +428,6 @@ def get_twitch_or_tracker_url():
         print("\n✖  Invalid URL! Please enter a URL from Twitchtracker, Streamscharts, Sullygnome, or Twitch.\n")
 
 
-def get_latest_version(retries=3):
-    for attempt in range(retries):
-        try:
-            res = requests.get("https://api.github.com/repos/MacielG1/VodRecovery/releases/latest", timeout=30)
-            if res.status_code == 200:
-                release_info = res.json()
-                return release_info["tag_name"]
-            else:
-                return None
-        except Exception:
-            if attempt < retries - 1: 
-                time.sleep(3)  
-                continue 
-            else:
-                return None
-
-
 def get_latest_release_info(retries=3):
     for attempt in range(retries):
         try:
@@ -475,6 +440,13 @@ def get_latest_release_info(retries=3):
                 time.sleep(3)
                 continue
             return None
+
+
+def get_latest_version(retries=3):
+    info = get_latest_release_info(retries=retries)
+    if info:
+        return info.get("tag_name")
+    return None
 
 
 def get_latest_release_zip_url():
@@ -1704,55 +1676,6 @@ def get_clip_format(video_id, offsets):
     return clip_format_dict
 
 
-def get_random_clip_information():
-    while True:
-        url = get_websites_tracker_url()
-
-        if "streamscharts" in url:
-            _, video_id = parse_streamscharts_url(url)
-            break
-        if "twitchtracker" in url:
-            _, video_id = parse_twitchtracker_url(url)
-            break
-        if "sullygnome" in url:
-            _, video_id = parse_sullygnome_url(url)
-            break
-
-        print("\n✖  Link not supported! Please try again:\n")
-
-    while True:
-        duration = get_time_input_HH_MM("Enter stream duration in (HH:MM) format: ")
-        hours, minutes = map(int, duration.split(":"))
-        if hours >= 0 and minutes >= 0:
-            break
-    return video_id, hours, minutes
-
-
-def manual_clip_recover():
-    while True:
-        streamer_name = input("Enter the Streamer Name: ")
-        if streamer_name.strip():
-            break
-        else:
-            print("\n✖  No streamer name! Please try again:\n")
-    while True:
-        video_id = input("Enter the Video ID (from: Twitchtracker/Streamscharts/Sullygnome): ")
-        if video_id.strip():
-            break
-        else:
-            print("\n✖  No video ID! Please try again:\n")
-
-    while True:
-        duration = get_time_input_HH_MM("Enter stream duration in (HH:MM) format: ")
-
-        hours, minutes = map(int, duration.split(":"))
-        if hours >= 0 and minutes >= 0:
-            total_minutes = hours * 60 + minutes
-            break
-
-    clip_recover(streamer_name, video_id, total_minutes)
-
-
 def website_clip_recover():
     tracker_url = get_websites_tracker_url()
 
@@ -1761,29 +1684,29 @@ def website_clip_recover():
     if "streamscharts" in tracker_url:
         streamer, video_id = parse_streamscharts_url(tracker_url)
 
-        print("\nRetrieving stream duration from Streamscharts")
-        duration_streamscharts = parse_duration_streamscharts(tracker_url)
+        # print("\nRetrieving stream duration from Streamscharts")
+        duration_streamscharts, prefetched_html = parse_duration_streamscharts(tracker_url)
         # print(f"Duration: {duration_streamscharts}")
 
-        clip_recover(streamer, video_id, int(duration_streamscharts))
+        clip_recover(streamer, video_id, int(duration_streamscharts) if duration_streamscharts else 0, tracker_url=tracker_url, prefetched_html=prefetched_html)
     elif "twitchtracker" in tracker_url:
         streamer, video_id = parse_twitchtracker_url(tracker_url)
 
-        print("\nRetrieving stream duration from Twitchtracker")
-        duration_twitchtracker = parse_duration_twitchtracker(tracker_url)
+        # print("\nRetrieving stream duration from Twitchtracker")
+        duration_twitchtracker, prefetched_html = parse_duration_twitchtracker(tracker_url)
         # print(f"Duration: {duration_twitchtracker}")
 
-        clip_recover(streamer, video_id, int(duration_twitchtracker))
+        clip_recover(streamer, video_id, int(duration_twitchtracker), tracker_url=tracker_url, prefetched_html=prefetched_html)
     elif "sullygnome" in tracker_url:
         streamer, video_id = parse_sullygnome_url(tracker_url)
 
-        print("\nRetrieving stream duration from Sullygnome")
+        # print("\nRetrieving stream duration from Sullygnome")
         duration_sullygnome = parse_duration_sullygnome(tracker_url)
         if duration_sullygnome is None:
             print("Could not retrieve duration from Sullygnome. Try a different URL.\n")
             return print_main_menu()
         # print(f"Duration: {duration_sullygnome}")
-        clip_recover(streamer, video_id, int(duration_sullygnome))
+        clip_recover(streamer, video_id, int(duration_sullygnome), tracker_url=tracker_url)
     else:
         print("\n✖  Link not supported! Try again...\n")
         return_to_main_menu()
@@ -2150,8 +2073,82 @@ def check_seleniumbase_version():
         pass
 
 
-def handle_selenium(url):
+def check_folder_write_permission():
     try:
+        test_file = ".vodrecovery_write_test"
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.remove(test_file)
+        return True
+    except (PermissionError, OSError):
+        return False
+    except Exception:
+        return True
+
+
+def is_permission_error(e):
+    err_str = str(e).lower()
+    return ("access is denied" in err_str or 
+            "permission" in err_str or 
+            "winerror 5" in err_str or
+            b"downloaded_files" in str(e).encode() if isinstance(e, Exception) else False)
+
+
+def check_selenium_folder_access():
+    if not check_folder_write_permission():
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        print(f"\n\033[93m⚠  WARNING: VodRecovery is running in a protected folder!\033[0m")
+        print(f"\033[93mLocation: {script_dir}\033[0m")
+        print("\033[93mPlease move VodRecovery to a user folder (Downloads, Desktop) or run as Administrator.\033[0m")
+        return False
+    return True
+
+
+def handle_selenium(url):
+    if not check_selenium_folder_access():
+        input("Press Enter to exit...")
+        sys.exit()
+    
+    # Method 1: Try headless mode with CDP solve_captcha (no visible window)
+    try:
+        check_seleniumbase_version()
+        with SB(uc=True, headless=True) as sb:
+            try:
+                sb.activate_cdp_mode(url)
+                sb.sleep(3)
+                
+                for attempt in range(5):
+                    sb.cdp.solve_captcha()
+                    sb.sleep(4)
+                    
+                    source = sb.cdp.get_page_source()
+                    waiting_msg = [f"Waiting for {url.split('/')[2]} to respond...", "security verification"]
+                    if all(msg not in source for msg in waiting_msg) and len(source) > 5000:
+                        sb.cdp.scroll_down(100)
+                        sb.sleep(2)
+                        source = sb.cdp.get_page_source()
+                        return source
+                    
+                    if attempt < 2:
+                        sb.sleep(2)
+                
+                sb.cdp.scroll_down(100)
+                sb.sleep(2)
+                source = sb.cdp.get_page_source()
+                if f"Waiting for {url.split('/')[2]} to respond..." in source:
+                    raise Exception("Error: Waiting for website to respond...")
+                if len(source) > 5000:
+                    return source
+                raise Exception("Page content too small, trying headed mode...")
+            finally:
+                selenium_cleanup()
+    except Exception as e:
+        if not is_permission_error(e):
+            print(f"Headless mode failed: {e}")
+    
+    # Method 2: Fallback to headed mode with uc_gui_click_captcha
+    try:
+        print("\nFalling back to headed browser mode...")
         check_seleniumbase_version()
         with SB(uc=True) as sb:
             try:
@@ -2163,7 +2160,6 @@ def handle_selenium(url):
                 if f"Waiting for {url.split('/')[2]} to respond..." in source:
                     raise Exception("Error: Waiting for website to respond...")
                 return source
-                
             except Exception:
                 try:
                     sb.activate_cdp_mode(url)
@@ -2173,14 +2169,19 @@ def handle_selenium(url):
                     source = sb.cdp.get_page_source()
                     return source
                 except Exception as e:
-                    print(e)
+                    if not is_permission_error(e):
+                        print(e)
             finally:
                 selenium_cleanup()
     except Exception as e:
-        print(e)
+        if not is_permission_error(e):
+            print(e)
 
 
 def selenium_get_latest_streams_from_twitchtracker(streamer_name):
+    if not check_selenium_folder_access():
+        input("Press Enter to exit...")
+        sys.exit()
     url = f"https://twitchtracker.com/{streamer_name}/streams"
     try:
         check_seleniumbase_version()
@@ -2368,7 +2369,8 @@ def selenium_get_latest_streams_from_twitchtracker(streamer_name):
                     print(f"\nError extracting stream data: {str(e2)}")
                     return None
     except Exception as e:
-        print(e)
+        if not is_permission_error(e):
+            print(e)
 
 
 def selenium_cleanup():
@@ -2386,26 +2388,30 @@ def parse_streamscharts_duration_data(bs):
 
 
 def parse_duration_streamscharts(streamscharts_url):
+    # Method 1: Using requests
     try:
-        # Method 1: Using requests
         response = requests.get(streamscharts_url, headers=return_user_agent(), timeout=10)
         if response.status_code == 200:
             bs = BeautifulSoup(response.content, "html.parser")
-            return parse_streamscharts_duration_data(bs)
-
-        # Method 2: Using Selenium
-        print("Opening Streamcharts with browser...")
-        source = handle_selenium(streamscharts_url)
-        bs = BeautifulSoup(source, "html.parser")
-        return parse_streamscharts_duration_data(bs)
-
+            return parse_streamscharts_duration_data(bs), response.text
     except Exception:
         pass
 
+    # Method 2: Using Selenium
+    print("Opening Streamcharts with browser...")
+    source = handle_selenium(streamscharts_url)
+    if source:
+        try:
+            bs = BeautifulSoup(source, "html.parser")
+            return parse_streamscharts_duration_data(bs), source
+        except Exception:
+            return None, source
+
+    # Method 3: Fallback to Sullygnome (only if selenium returned nothing)
     sullygnome_url = convert_url(streamscharts_url, "sullygnome")
     if sullygnome_url:
-        return parse_duration_sullygnome(sullygnome_url)
-    return None
+        return parse_duration_sullygnome(sullygnome_url), None
+    return None, None
 
 
 def parse_twitchtracker_duration_data(bs):
@@ -2420,14 +2426,14 @@ def parse_duration_twitchtracker(twitchtracker_url, try_alternative=True):
         response = requests.get(twitchtracker_url, headers=return_user_agent(), timeout=10)
         if response.status_code == 200:
             bs = BeautifulSoup(response.content, "html.parser")
-            return parse_twitchtracker_duration_data(bs)
+            return parse_twitchtracker_duration_data(bs), response.text
 
         # Method 2: Using Selenium
         print("Opening Twitchtracker with browser...")
         source = handle_selenium(twitchtracker_url)
 
         bs = BeautifulSoup(source, "html.parser")
-        return parse_twitchtracker_duration_data(bs)
+        return parse_twitchtracker_duration_data(bs), source
 
     except Exception:
         pass
@@ -2435,8 +2441,8 @@ def parse_duration_twitchtracker(twitchtracker_url, try_alternative=True):
     if try_alternative:
         sullygnome_url = convert_url(twitchtracker_url, "sullygnome")
         if sullygnome_url:
-            return parse_duration_sullygnome(sullygnome_url)
-    return None
+            return parse_duration_sullygnome(sullygnome_url), None
+    return None, None
 
 
 def parse_sullygnome_duration_data(bs):
@@ -2465,8 +2471,103 @@ def parse_duration_sullygnome(sullygnome_url):
 
     sullygnome_url = convert_url(sullygnome_url, "twitchtracker")
     if sullygnome_url:
-        return parse_duration_twitchtracker(sullygnome_url, try_alternative=False)
+        duration, _ = parse_duration_twitchtracker(sullygnome_url, try_alternative=False)
+        return duration
     return None
+
+
+def scrape_clip_slugs_from_tracker_page(tracker_url, prefetched_html=None):
+    if "sullygnome" in tracker_url:
+        tt_url = convert_url(tracker_url, "twitchtracker")
+        if tt_url:
+            print(f"Sullygnome has no clips section — trying Twitchtracker instead...")
+            tracker_url = tt_url
+        else:
+            return []
+
+    JTVNW_PATTERN = re.compile(r"twitch-clips-thumbnails-prod/([^/]+)/")
+
+    def extract_slugs_from_html(html_source):
+        slugs = []
+        for m in JTVNW_PATTERN.finditer(html_source if isinstance(html_source, str) else html_source.decode("utf-8", errors="ignore")):
+            slugs.append(m.group(1))
+        return list(dict.fromkeys(slugs))
+
+    if prefetched_html:
+        slugs = extract_slugs_from_html(prefetched_html)
+        if slugs:
+            return slugs
+
+    try:
+        response = requests.get(tracker_url, headers=return_user_agent(), timeout=10)
+        if response.status_code == 200:
+            slugs = extract_slugs_from_html(response.content)
+            if slugs:
+                return slugs
+    except Exception:
+        pass
+
+    print("Opening tracker page with browser to find clips...")
+    if not check_selenium_folder_access():
+        return []
+
+    TRIGGER_LAZY_JS = """
+        (function() {
+            var lazys = document.querySelectorAll('.lazy-block');
+            lazys.forEach(function(el) {
+                el.scrollIntoView();
+            });
+            window.scrollTo(0, document.body.scrollHeight);
+        })();
+    """
+
+    def _poll_for_clips(sb, max_attempts=15):
+        for attempt in range(max_attempts):
+            source = sb.cdp.get_page_source()
+            if "twitch-clips-thumbnails-prod" in source:
+                return extract_slugs_from_html(source)
+            try:
+                sb.cdp.evaluate(TRIGGER_LAZY_JS)
+            except Exception:
+                pass
+            sb.cdp.scroll_down(500)
+            sb.sleep(2)
+        return extract_slugs_from_html(sb.cdp.get_page_source())
+
+    def _selenium_scrape():
+        try:
+            check_seleniumbase_version()
+            with SB(uc=True, headless=True) as sb:
+                try:
+                    sb.activate_cdp_mode(tracker_url)
+                    sb.sleep(3)
+                    sb.cdp.solve_captcha()
+                    sb.sleep(4)
+                    result = _poll_for_clips(sb)
+                    if result:
+                        return result
+                finally:
+                    selenium_cleanup()
+        except Exception:
+            pass
+
+        try:
+            with SB(uc=True) as sb:
+                try:
+                    sb.activate_cdp_mode(tracker_url)
+                    sb.sleep(5)
+                    sb.uc_gui_click_captcha()
+                    sb.sleep(3)
+                    result = _poll_for_clips(sb)
+                    if result:
+                        return result
+                finally:
+                    selenium_cleanup()
+        except Exception:
+            pass
+        return []
+
+    return _selenium_scrape()
 
 
 def parse_streamscharts_datetime_data(bs):
@@ -3081,48 +3182,43 @@ def bulk_vod_recovery():
         input("\nPress Enter to continue...")
 
 
-def clip_recover(streamer, video_id, duration):
-    iteration_counter, valid_counter = 0, 0
+def clip_recover(streamer, video_id, duration, tracker_url=None, prefetched_html=None):
     valid_url_list = []
 
-    clip_format = print_clip_format_menu().split(" ")
-    print("Searching...")
-    full_url_list = get_all_clip_urls(get_clip_format(video_id, calculate_max_clip_offset(duration)), clip_format)
+    slugs = []
+    if tracker_url:
+        print("Searching for clips...")
+        slugs = scrape_clip_slugs_from_tracker_page(tracker_url, prefetched_html=prefetched_html)
 
-    request_session = requests.Session()
-    max_retries = 3
-
-    def check_url(url):
-        for attempt in range(1, max_retries + 1):
-            try:
-                response = request_session.head(url, timeout=20)
-                return url, response.status_code
-            except Exception:
-                if attempt < max_retries:
-                    time.sleep(0.5)
-                else:
-                    return url, None
-
-    with ThreadPoolExecutor(max_workers=100) as executor:
-        future_to_url = {executor.submit(check_url, url): url for url in full_url_list}
-        for future in as_completed(future_to_url):
-            iteration_counter += 1
-            url, status = future.result()
-            print(f"\rSearching for clips... {iteration_counter} of {len(full_url_list)}", end=" ", flush=True)
-            if status == 200:
-                valid_counter += 1
+    if slugs:
+        print(f"Found {len(slugs)} clip(s) on tracker page. Fetching download URLs...")
+        for i, slug in enumerate(slugs, 1):
+            print(f"\r\033[K Fetching clip {i}/{len(slugs)}: {slug[:50]}...", end="", flush=True)
+            url = get_twitch_clip(slug, retries=2)
+            if url:
                 valid_url_list.append(url)
-                print(f"- {valid_counter} Clip(s) Found", end=" ")
-            else:
-                print(f"- {valid_counter} Clip(s) Found", end=" ")
-
-    print()
+                print(f" \033[92m✔\033[0m", end="", flush=True)
+        print()
+    else:
+        print("No clips found! Returning to main menu.\n")
+        return
 
     if valid_url_list:
+        print()
+        display_count = 3
+        shown = 0
+        for i, url in enumerate(valid_url_list):
+            print(f"  {i + 1} - \033[92m{url}\033[0m")
+            shown += 1
+            if shown % display_count == 0 and i + 1 < len(valid_url_list):
+                if not get_yes_no_choice("Show more clips?"):
+                    break
+                display_count = len(valid_url_list)
+        print()
         for url in valid_url_list:
             write_text_file(url, get_log_filepath(streamer, video_id))
         if (read_config_by_key("settings", "AUTO_DOWNLOAD_CLIPS") or get_yes_no_choice("\nDo you want to download the recovered clips?")):
-            download_clips(get_default_directory(), streamer, video_id)
+            download_clips_gql(get_default_directory(), streamer, video_id, slugs, prefetched_urls=valid_url_list)
         if read_config_by_key("settings", "REMOVE_LOG_FILE"):
             os.remove(get_log_filepath(streamer, video_id))
         else:
@@ -3211,61 +3307,6 @@ def merge_csv_files(csv_filename, directory_path):
     print("CSV files merged successfully!")
 
 
-def random_clip_recovery(video_id, hours, minutes):
-    max_retries = 3
-    display_count = 3
-
-    clip_format = print_clip_format_menu().split(" ")
-    duration = calculate_broadcast_duration_in_minutes(hours, minutes)
-    full_url_list = get_all_clip_urls(get_clip_format(video_id, calculate_max_clip_offset(duration)), clip_format)
-    random.shuffle(full_url_list)
-
-    request_session = requests.Session()
-
-    def check_url(url):
-        for _ in range(max_retries):
-            try:
-                response = request_session.head(url, timeout=20)
-                if response.status_code == 200:
-                    return url
-            except Exception:
-                time.sleep(0.5)
-        return None
-
-    print("Searching...")
-
-    counter = 0
-    should_continue = True
-    url_iter = iter(full_url_list)
-
-    with ThreadPoolExecutor() as executor:
-        while should_continue:
-            batch_futures = []
-            try:
-                for _ in range(display_count * 2):
-                    url = next(url_iter)
-                    batch_futures.append(executor.submit(check_url, url))
-            except StopIteration:
-                pass 
-
-            if not batch_futures:
-                break 
-
-            for future in as_completed(batch_futures):
-                result = future.result()
-                if result:
-                    print(result)
-                    counter += 1
-
-                    if counter % display_count == 0:
-                        if not get_yes_no_choice("\nDo you want to search more URLs?"):                            
-                            should_continue = False
-                            break
-
-            if counter == 0 and not should_continue:
-                print("No valid clips found.")
-                break
-
 
 def bulk_clip_recovery():
     vod_counter = 0
@@ -3287,22 +3328,7 @@ def bulk_clip_recovery():
     elif bulk_recovery_option == "3":
         return_to_main_menu()
 
-    clip_format = print_clip_format_menu().split(" ")
     stream_info_dict = parse_clip_csv_file(csv_file_path)
-
-    request_session = requests.Session()
-    max_retries = 3
-
-    def check_url(url):
-        for attempt in range(1, max_retries + 1):
-            try:
-                response = request_session.head(url, timeout=20)
-                return url, response.status_code
-            except Exception:
-                if attempt < max_retries:
-                    time.sleep(0.5)
-                else:
-                    return url, None
 
     should_download = read_config_by_key("settings", "AUTO_DOWNLOAD_CLIPS")
     if not should_download:
@@ -3318,34 +3344,38 @@ def bulk_clip_recovery():
 
     for video_id, values in stream_info_dict.items():
         vod_counter += 1
-        iteration_counter, valid_counter = 0, 0
-        
-        print(f"\nProcessing Past Broadcast:\n" 
-              f"Stream Date: {values[0].replace('-', ' ')}\n" 
-              f"Vod ID: {video_id}\n" 
-              f"Vod Number: {vod_counter} of {len(stream_info_dict)}\n")
-        
-        full_url_list = get_all_clip_urls(get_clip_format(video_id, values[1]), clip_format)
-        print("Searching...")
+        valid_counter = 0
 
-        with ThreadPoolExecutor(max_workers=100) as executor:
-            future_to_url = {executor.submit(check_url, url): url for url in full_url_list}
-            for future in as_completed(future_to_url):
-                iteration_counter += 1
-                url, status = future.result()
-                print(f"\rSearching for clips... {iteration_counter} of {len(full_url_list)}", end=" ", flush=True)
-                if status == 200:
-                    valid_counter += 1
-                    write_text_file(url, get_log_filepath(streamer_name, video_id))
-                    print(f"- {valid_counter} Clip(s) Found", end=" ")
-                else:
-                    print(f"- {valid_counter} Clip(s) Found", end=" ")
+        print(f"\nProcessing Past Broadcast:\n"
+              f"Stream Date: {values[0].replace('-', ' ')}\n"
+              f"Vod ID: {video_id}\n"
+              f"Vod Number: {vod_counter} of {len(stream_info_dict)}\n")
+
+        tracker_url = f"https://twitchtracker.com/{streamer_name}/streams/{video_id}"
+        print(f"Scraping clips from: {tracker_url}")
+        slugs = scrape_clip_slugs_from_tracker_page(tracker_url)
+
+        if not slugs:
+            print("No clips found on tracker page. Moving on to next vod.")
+            continue
+
+        print(f"Found {len(slugs)} clip(s). Fetching download URLs...")
+        valid_urls = []
+        for i, slug in enumerate(slugs, 1):
+            print(f"\r\033[K Fetching clip {i}/{len(slugs)}: {slug[:50]}...", end="", flush=True)
+            url = get_twitch_clip(slug, retries=2)
+            if url:
+                valid_counter += 1
+                valid_urls.append(url)
+                write_text_file(url, get_log_filepath(streamer_name, video_id))
+                print(f" \033[92m✔\033[0m", end="", flush=True)
+        print()
 
         print(f"\n\033[92m{valid_counter} Clip(s) Found\033[0m\n")
 
         if valid_counter != 0:
             if should_download:
-                download_clips(get_default_directory(), streamer_name, video_id)
+                download_clips_gql(get_default_directory(), streamer_name, video_id, slugs, prefetched_urls=valid_urls)
                 os.remove(get_log_filepath(streamer_name, video_id))
             else:
                 if not should_keep_logs:
@@ -3355,7 +3385,7 @@ def bulk_clip_recovery():
         else:
             if len(stream_info_dict) > vod_counter:
                 print("No clips found!... Moving on to next vod.")
-    
+
     input("\nPress Enter to continue...")
 
 
@@ -3385,6 +3415,29 @@ def download_clips(directory, streamer_name, video_id):
             print(f"Failed to download.... {link}")
             continue
 
+    print(f"\n\033[92m\u2713 Clips downloaded to {download_directory}\033[0m")
+
+
+def download_clips_gql(directory, streamer_name, video_id, slugs, prefetched_urls=None):
+    download_directory = os.path.join(directory, f"{streamer_name.title()}_{video_id}")
+    os.makedirs(download_directory, exist_ok=True)
+    for i, slug in enumerate(slugs, 1):
+        try:
+            url = prefetched_urls[i - 1] if prefetched_urls and i - 1 < len(prefetched_urls) else get_twitch_clip(slug, retries=2)
+            if not url:
+                print(f"Skipping {slug} (could not get URL)")
+                continue
+            response = requests.get(url, stream=False, timeout=60)
+            if response.status_code == 200:
+                file_name = f"{streamer_name.title()}_{video_id}_{i:04d}_{slug[:40]}{get_default_video_format()}"
+                with open(os.path.join(download_directory, file_name), "wb") as x:
+                    print(f"Downloaded: {file_name}")
+                    x.write(response.content)
+            else:
+                print(f"Failed to download {slug}: HTTP {response.status_code}")
+        except Exception:
+            print(f"Failed to download {slug}")
+            continue
     print(f"\n\033[92m\u2713 Clips downloaded to {download_directory}\033[0m")
 
 
@@ -4028,7 +4081,7 @@ def record_live_cli(twitch_url, from_start=False):
 
     try:
         subprocess.run(command, check=True)
-        print(f"\n\033[92m Live recording saved to {output_path}\033[0m\n")
+        print(f"\n\033[92m Live recording saved to {output_path}\033[0m\n")
     except Exception as exc:
         raise SystemExit(f"Error: Live recording failed ({exc}).") from exc
 
@@ -4568,7 +4621,11 @@ def twitch_recover(link=None):
     url, title, stream_datetime = get_vod_or_highlight_url(vod_id)
 
     if url is None:
-        print("\n✖  Unable to find it! Try using one of the other websites.\n")
+        print("\n✖  Unable to find it with Twitch direct url!")
+        print("\nTry using one of the tracker websites instead:")
+        print("   - https://twitchtracker.com")
+        print("   - https://streamscharts.com")
+        print("   - https://sullygnome.com\n")
         input("Press Enter to continue...")
         return_to_main_menu()
 
@@ -4580,7 +4637,10 @@ def twitch_recover(link=None):
     m3u8_url = return_supported_qualities(url)
 
     if m3u8_url is None:
-        print("\n✖  Unable to find a playable quality! Try using one of the other websites.\n")
+        print("\n✖  Unable to find a playable quality! Try using one of the tracker websites instead:")
+        print("   - https://twitchtracker.com")
+        print("   - https://streamscharts.com")
+        print("   - https://sullygnome.com\n")
         input("Press Enter to continue...")
         return_to_main_menu()
 
@@ -4633,8 +4693,7 @@ def get_twitch_clip(clip_slug, retries=3):
     print("\n✖  Unable to get clip! Check the URL and try again.\n")
     if CLI_MODE:
         raise RuntimeError("Unable to get clip")
-    input("Press Enter to continue...")
-    return_to_main_menu()
+    return None
 
 
 def twitch_clip_downloader(clip_url, slug, streamer):
@@ -4950,22 +5009,13 @@ def run_vod_recover():
             elif menu == 2:
                 clip_type = print_clip_type_menu()
                 if clip_type == 1:
-                    clip_recovery_method = print_clip_recovery_menu()
-                    if clip_recovery_method == 1:
-                        website_clip_recover()
-                    elif clip_recovery_method == 2:
-                        manual_clip_recover()
-                    elif clip_recovery_method == 3:
-                        continue
+                    website_clip_recover()
                 elif clip_type == 2:
-                    video_id, hour, minute = get_random_clip_information()
-                    random_clip_recovery(video_id, hour, minute)
-                elif clip_type == 3:
                     clip_url = print_get_twitch_clip_url_menu()
                     handle_twitch_clip(clip_url)
-                elif clip_type == 4:
+                elif clip_type == 3:
                     bulk_clip_recovery()
-                elif clip_type == 5:
+                elif clip_type == 4:
                     continue
             elif menu == 3:
                 download_type = print_download_type_menu()
