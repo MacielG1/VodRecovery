@@ -1,4 +1,5 @@
 import argparse
+import ctypes
 import hashlib
 import json
 import csv
@@ -35,7 +36,7 @@ logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
 
-CURRENT_VERSION = "1.5.14"
+CURRENT_VERSION = "1.5.15"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -2096,17 +2097,39 @@ def is_permission_error(e):
 
 def check_selenium_folder_access():
     if not check_folder_write_permission():
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        print(f"\n\033[93m⚠  WARNING: VodRecovery is running in a protected folder!\033[0m")
-        print(f"\033[93mLocation: {script_dir}\033[0m")
-        print("\033[93mPlease move VodRecovery to a user folder (Downloads, Desktop) or run as Administrator.\033[0m")
+        print(f"\n\033[97mWARNING: VodRecovery is running in a protected folder!\033[0m")
+        print("\033[97mRun as Administrator or move VodRecovery to a non-privileged folder (e.g. Downloads, Desktop).\033[0m")
         return False
     return True
 
 
+def check_admin_privileges() -> bool:
+    if sys.platform == "win32":
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+    else:
+        return os.getuid() == 0
+
+
+def relaunch_as_admin():
+    if sys.platform == "win32":
+        print("\033[97mRequesting administrator privileges — a new window will open...\033[0m")
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, " ".join(f'"{a}"' for a in sys.argv), None, 1
+        )
+    else:
+        print("\033[97mRequesting root privileges via sudo...\033[0m")
+        subprocess.run(["sudo", sys.executable] + sys.argv)
+
+
 def handle_selenium(url):
     if not check_selenium_folder_access():
-        input("Press Enter to exit...")
+        if not check_admin_privileges():
+            relaunch_as_admin()
+        else:
+            input("\nPress Enter to exit...")
         sys.exit()
     
     # Method 1: Try headless mode with CDP solve_captcha (no visible window)
