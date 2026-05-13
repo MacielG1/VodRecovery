@@ -25,7 +25,6 @@ import requests
 from packaging import version
 import ffmpeg_downloader as ffdl
 from tqdm import tqdm
-from ffmpeg_progress_yield import FfmpegProgress
 import logging
 import importlib.metadata
 import tempfile
@@ -36,7 +35,7 @@ logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
 
-CURRENT_VERSION = "1.5.16"
+CURRENT_VERSION = "1.5.17"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -435,6 +434,9 @@ def get_latest_release_info(retries=3):
             response = requests.get("https://api.github.com/repos/MacielG1/VodRecovery/releases/latest", timeout=30)
             if response.status_code == 200:
                 return response.json()
+            if attempt < retries - 1:
+                time.sleep(3)
+                continue
             return None
         except Exception:
             if attempt < retries - 1:
@@ -1060,6 +1062,7 @@ def get_latest_streams(streamer_name=None, skip_gql=False):
                 continue
 
             if m3u8_source:
+                m3u8_source = process_m3u8_configuration(m3u8_source)
                 handle_download_menu(m3u8_source, title=title, stream_datetime=timestamp)
             else:
                 print(f"\n✖  Could not recover VOD {video_id}!")
@@ -1084,6 +1087,7 @@ def get_latest_streams(streamer_name=None, skip_gql=False):
                     continue
                 if m3u8_source:
                     print(f"\nRecovering VOD {video_id}...")
+                    m3u8_source = process_m3u8_configuration(m3u8_source)
                     handle_vod_url_normal(m3u8_source, title=title, stream_date=timestamp)
                 else:
                     print(f"\n✖  Could not recover VOD {video_id}!")
@@ -1217,7 +1221,10 @@ def open_file(file_path):
     if sys.platform.startswith("darwin"):
         subprocess.call(("open", file_path))
     elif os.name == "nt":
-        subprocess.Popen(["start", file_path], shell=True)
+        try:
+            os.startfile(file_path)
+        except Exception:
+            subprocess.Popen(f'start "" "{file_path}"', shell=True)
     elif os.name == "posix":
         subprocess.call(("xdg-open", file_path))
     else:
@@ -2053,7 +2060,12 @@ def parse_website_duration(duration_string):
     return calculate_broadcast_duration_in_minutes(time_units["h"], time_units["m"])
 
 
+_seleniumbase_version_checked = False
+
 def check_seleniumbase_version():
+    global _seleniumbase_version_checked
+    if _seleniumbase_version_checked:
+        return
     try:
         requirements_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib", "requirements.txt")
         required_version = None
@@ -2074,6 +2086,8 @@ def check_seleniumbase_version():
                 print(f"\033[91m[ERROR]\033[0m Could not upgrade seleniumbase: {pip_e}")
     except Exception as e:
         pass
+    finally:
+        _seleniumbase_version_checked = True
 
 
 def check_folder_write_permission():
@@ -2825,10 +2839,18 @@ def mark_invalid_segments_in_playlist(m3u8_link):
 
 def return_m3u8_duration(m3u8_link):
     total_duration = 0
-    file_contents = requests.get(m3u8_link, timeout=30).text.splitlines()
+    try:
+        response = requests.get(m3u8_link, timeout=30)
+        response.raise_for_status()
+        file_contents = response.text.splitlines()
+    except Exception:
+        return 0
     for line in file_contents:
         if line.startswith("#EXTINF:"):
-            segment_duration = float(line.split(":")[1].split(",")[0])
+            try:
+                segment_duration = float(line.split(":")[1].split(",")[0])
+            except (ValueError, IndexError):
+                continue
             total_duration += segment_duration
     total_minutes = int(total_duration // 60)
     return total_minutes
@@ -3172,8 +3194,8 @@ def bulk_vod_recovery():
         m3u8_link = asyncio.run(get_vod_urls(streamer_name.lower(), video_id, timestamp))
 
         if m3u8_link is not None:
-            process_m3u8_configuration(m3u8_link)
-            all_m3u8_links.append((video_id, m3u8_link))
+            processed_source = process_m3u8_configuration(m3u8_link) or m3u8_link
+            all_m3u8_links.append((video_id, processed_source))
         else:
             print("No VODs found using the current domain list.")
     
@@ -3623,59 +3645,115 @@ def calculate_slice_duration(start_time, end_time):
 
 
 def handle_progress_bar(command, output_filename, m3u8_source, start_time=None, end_time=None):
+    process = None
     try:
         short_title = get_short_filename(output_filename)
         
+        live_progress = False
         if start_time and end_time:
             duration_override = calculate_slice_duration(start_time, end_time)
         else:
-            duration_override = get_m3u8_duration(m3u8_source)
+            if is_m3u8_live(m3u8_source):
+                live_progress = True
+                duration_override = None
+            else:
+                duration_override = get_m3u8_duration(m3u8_source)
         
-        with FfmpegProgress(command) as ff:
-            with tqdm(total=100, position=0, desc=short_title, leave=None, colour="blue", unit="%", bar_format="{l_bar}{bar}| {percentage:.1f}/100%{postfix}") as pbar:
-                # Extract output file path from the ffmpeg command
-                try:
-                    if "-y" in command:
-                        out_idx = command.index("-y") + 1
-                        output_path_cmd = command[out_idx]
-                    else:
-                        output_path_cmd = output_filename
-                except (ValueError, IndexError):
-                    output_path_cmd = output_filename
+        try:
+            if "-y" in command:
+                out_idx = command.index("-y") + 1
+                output_path_cmd = command[out_idx]
+            else:
+                output_path_cmd = output_filename
+        except (ValueError, IndexError):
+            output_path_cmd = output_filename
 
-                if duration_override:
-                    progress_iterator = ff.run_command_with_progress(duration_override=duration_override)
-                else:
-                    progress_iterator = ff.run_command_with_progress()
-                
-                for progress in progress_iterator:
-                    if progress is not None:
-                        pbar.update(progress - pbar.n)
+        progress_command = [command[0], "-progress", "-", "-nostats"] + command[1:]
+        process = subprocess.Popen(
+            progress_command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=False,
+        )
 
-                    current_time_str = "00:00:00"
-                    total_time_str = "00:00:00"
-                    
-                    if duration_override and progress is not None:
-                        current_seconds = (progress / 100.0) * duration_override
-                        current_time_str = seconds_to_time_str(current_seconds)
-                        total_time_str = seconds_to_time_str(duration_override)
-                    
-                    size_str = "0 B"
+        if live_progress:
+            pbar = tqdm(total=None, position=0, desc=short_title, leave=None, colour="blue", bar_format="{desc}: {elapsed}{postfix}")
+        else:
+            pbar = tqdm(total=100, position=0, desc=short_title, leave=None, colour="blue", unit="%", bar_format="{l_bar}{bar}| {percentage:.1f}/100%{postfix}")
+
+        current_seconds = 0
+        with pbar:
+            while True:
+                if process.stdout is None:
+                    break
+                raw_line = process.stdout.readline()
+                if raw_line == b"" and process.poll() is not None:
+                    break
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                progress = None
+                if line.startswith("out_time="):
                     try:
-                        file_path = os.path.normpath(output_path_cmd)
-                        if os.path.exists(file_path):
-                            size_str = format_file_size(os.path.getsize(file_path))
+                        time_value = line.split("=", 1)[1]
+                        parts = time_value.split(":")
+                        current_seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+                        if duration_override:
+                            progress = min(100.0, (current_seconds / duration_override) * 100.0)
                     except Exception:
                         pass
-                    
-                    if duration_override:
-                        postfix_str = f"[{current_time_str} / {total_time_str}] • {size_str}"
-                    else:
-                        postfix_str = size_str
-                    
-                    pbar.set_postfix_str(postfix_str, refresh=True)
 
-                pbar.close()
+                if progress is not None:
+                    pbar.update(progress - pbar.n)
+                elif live_progress and line.startswith("progress="):
+                    pbar.update(1)
+
+                current_time_str = "00:00:00"
+                total_time_str = "00:00:00"
+
+                if duration_override and progress is not None:
+                    current_time_str = seconds_to_time_str(current_seconds)
+                    total_time_str = seconds_to_time_str(duration_override)
+
+                size_str = "0 B"
+                try:
+                    file_path = os.path.normpath(output_path_cmd)
+                    if os.path.exists(file_path):
+                        size_str = format_file_size(os.path.getsize(file_path))
+                except Exception:
+                    pass
+
+                if duration_override:
+                    postfix_str = f"[{current_time_str} / {total_time_str}] • {size_str}"
+                elif live_progress:
+                    elapsed_str = seconds_to_time_str(current_seconds)
+                    postfix_str = f" [live {elapsed_str}] • {size_str}"
+                else:
+                    postfix_str = size_str
+
+                pbar.set_postfix_str(postfix_str, refresh=True)
+
+        if process.returncode not in (0, None):
+            raise RuntimeError(f"ffmpeg exited with code {process.returncode}")
+        return True
+    except KeyboardInterrupt:
+        print("\nStopping ffmpeg gracefully...")
+        if process is not None and process.poll() is None:
+            try:
+                if process.stdin is not None:
+                    process.stdin.write(b"q")
+                    process.stdin.flush()
+                process.wait(timeout=20)
+            except Exception:
+                try:
+                    if process.poll() is None:
+                        process.terminate()
+                        process.wait(timeout=10)
+                except Exception:
+                    try:
+                        if process.poll() is None:
+                            process.kill()
+                    except Exception:
+                        pass
         return True
     except Exception as e:
         print(f"Error: {str(e).strip()}")
@@ -3987,6 +4065,7 @@ def handle_live_recording_fallback(channel_name, command, output_path):
         
     m3u8_source = vod_recover(channel_name, vod_id, formatted)
     if m3u8_source:
+        m3u8_source = process_m3u8_configuration(m3u8_source)
         vod_filename = get_filename_for_url_source(m3u8_source, title=None, stream_date=formatted)
         success = download_m3u8_video_url(m3u8_source, vod_filename, from_start=True)
         if success:
@@ -4561,7 +4640,8 @@ def fetch_twitch_data(vod_id, retries=3, delay=5):
             res = requests.post(
                 "https://gql.twitch.tv/gql",
                 json={
-                    "query": f'query {{ video(id: "{vod_id}") {{ title, broadcastType, createdAt, seekPreviewsURL, owner {{ login }} }} }}'
+                    "query": "query($id: ID!) { video(id: $id) { title broadcastType createdAt seekPreviewsURL owner { login } } }",
+                    "variables": {"id": str(vod_id)},
                 },
                 headers={
                     "Client-Id": "ue6666qo983tsx6so1t0vnawi233wa",
@@ -5170,10 +5250,10 @@ if __name__ == "__main__":
                 download_url_cli(args)
         except KeyboardInterrupt:
             print("\n\nExiting...")
-            os._exit(0)
+            sys.exit(0)
     else:
         try:
             run_vod_recover()
         except KeyboardInterrupt:
             print("\n\nExiting...")
-            os._exit(0)
+            sys.exit(0)
