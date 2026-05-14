@@ -35,7 +35,7 @@ logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
 
-CURRENT_VERSION = "1.5.17"
+CURRENT_VERSION = "1.5.18"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -320,7 +320,7 @@ def print_options_menu():
 def print_get_m3u8_link_menu():
     while True:
         m3u8_url = input("Enter M3U8 Link: ").strip(" \"'")
-        if m3u8_url.endswith(".m3u8"):
+        if ".m3u8" in m3u8_url:
             return m3u8_url
         else:
             print("✖  Invalid M3U8 link! Please try again:\n")
@@ -1267,7 +1267,10 @@ def write_m3u8_to_file(m3u8_link, destination_path, max_retries=5):
                     m3u8_file.write(response.text)
                 return destination_path
             elif response.status_code in (403, 404, 410):
-                vod_id = parse_video_id_from_m3u8_link(m3u8_link)
+                try:
+                    vod_id = parse_video_id_from_m3u8_link(m3u8_link)
+                except Exception:
+                    vod_id = "video"
                 generated_path = os.path.join(get_default_directory(), f"vod_{vod_id}_generated.m3u8")
                 if os.path.exists(generated_path):
                     with open(generated_path, "r", encoding="utf-8") as gen_file:
@@ -1363,7 +1366,10 @@ def is_video_muted(m3u8_link):
         if response.status_code == 200:
             return bool("unmuted" in response.text)
         elif response.status_code in (403, 404, 410):
-            vod_id = parse_video_id_from_m3u8_link(m3u8_link)
+            try:
+                vod_id = parse_video_id_from_m3u8_link(m3u8_link)
+            except Exception:
+                return False
             generated_path = os.path.join(get_default_directory(), f"vod_{vod_id}_generated.m3u8")
             if os.path.exists(generated_path):
                 with open(generated_path, "r", encoding="utf-8") as f:
@@ -2757,7 +2763,10 @@ def parse_datetime_sullygnome(sullygnome_url, skip_gql=False):
 
 
 def unmute_vod(m3u8_link):
-    video_filepath = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link), parse_video_id_from_m3u8_link(m3u8_link))
+    try:
+        video_filepath = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link), parse_video_id_from_m3u8_link(m3u8_link))
+    except Exception:
+        video_filepath = os.path.join(get_default_directory(), "video.m3u8")
     
     write_m3u8_to_file(m3u8_link, video_filepath)
     
@@ -2807,7 +2816,10 @@ def unmute_vod(m3u8_link):
 def mark_invalid_segments_in_playlist(m3u8_link):
     print()
     unmute_vod(m3u8_link)
-    vod_file_path = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link),parse_video_id_from_m3u8_link(m3u8_link))
+    try:
+        vod_file_path = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link),parse_video_id_from_m3u8_link(m3u8_link))
+    except Exception:
+        vod_file_path = os.path.join(get_default_directory(), "video.m3u8")
 
     with open(vod_file_path, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
@@ -2897,7 +2909,10 @@ def check_if_unmuted_is_playable(m3u8_source):
 
 
 def process_m3u8_configuration(m3u8_link, skip_check=False):
-    vod_id = parse_video_id_from_m3u8_link(m3u8_link)
+    try:
+        vod_id = parse_video_id_from_m3u8_link(m3u8_link)
+    except Exception:
+        vod_id = "video"
     generated_path = os.path.join(get_default_directory(), f"vod_{vod_id}_generated.m3u8")
     is_blocked_vod = False
     try:
@@ -2917,16 +2932,23 @@ def process_m3u8_configuration(m3u8_link, skip_check=False):
         print("Video contains muted/invalid segments")
         if read_config_by_key("settings", "UNMUTE_VIDEO"):
             unmute_vod(m3u8_link)
-            m3u8_source = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link),parse_video_id_from_m3u8_link(m3u8_link),)
+            try:
+                m3u8_source = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link),parse_video_id_from_m3u8_link(m3u8_link),)
+            except Exception:
+                m3u8_source = os.path.join(get_default_directory(), f"vod_{vod_id}.m3u8")
             is_playable = check_if_unmuted_is_playable(m3u8_source)
             if is_playable:
                 return m3u8_source
             else:
                 return m3u8_link
-        
+        else:
+            m3u8_source = m3u8_link
     else:
         m3u8_source = m3u8_link
-        file_path = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link), parse_video_id_from_m3u8_link(m3u8_link))
+        try:
+            file_path = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link), parse_video_id_from_m3u8_link(m3u8_link))
+        except Exception:
+            file_path = os.path.join(get_default_directory(), f"vod_{vod_id}.m3u8")
         if os.path.exists(file_path):
             os.remove(file_path)
 
@@ -2944,7 +2966,10 @@ def process_m3u8_configuration(m3u8_link, skip_check=False):
 
 
 def get_all_playlist_segments(m3u8_link):
-    video_file_path = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link), parse_video_id_from_m3u8_link(m3u8_link))
+    try:
+        video_file_path = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link), parse_video_id_from_m3u8_link(m3u8_link))
+    except Exception:
+        video_file_path = os.path.join(get_default_directory(), "video.m3u8")
     write_m3u8_to_file(m3u8_link, video_file_path)
 
     segment_list = []
@@ -3710,7 +3735,7 @@ def handle_progress_bar(command, output_filename, m3u8_source, start_time=None, 
                 current_time_str = "00:00:00"
                 total_time_str = "00:00:00"
 
-                if duration_override and progress is not None:
+                if duration_override and current_seconds > 0:
                     current_time_str = seconds_to_time_str(current_seconds)
                     total_time_str = seconds_to_time_str(duration_override)
 
@@ -3725,8 +3750,8 @@ def handle_progress_bar(command, output_filename, m3u8_source, start_time=None, 
                 if duration_override:
                     postfix_str = f"[{current_time_str} / {total_time_str}] • {size_str}"
                 elif live_progress:
-                    elapsed_str = seconds_to_time_str(current_seconds)
-                    postfix_str = f" [live {elapsed_str}] • {size_str}"
+                    media_str = seconds_to_time_str(current_seconds)
+                    postfix_str = f" [recorded {media_str}] • {size_str}"
                 else:
                     postfix_str = size_str
 
@@ -4294,8 +4319,14 @@ def get_filename_for_file_source(m3u8_source, title, stream_date):
 
 
 def get_filename_for_url_source(m3u8_source, title, stream_date):
-    streamer = parse_streamer_from_m3u8_link(m3u8_source)
-    vod_id = parse_video_id_from_m3u8_link(m3u8_source)
+    try:
+        streamer = parse_streamer_from_m3u8_link(m3u8_source)
+    except Exception:
+        streamer = "video"
+    try:
+        vod_id = parse_video_id_from_m3u8_link(m3u8_source)
+    except Exception:
+        vod_id = "vod"
     formatted_date = format_date(stream_date) if stream_date else None
 
     filename_parts = [streamer]
@@ -4361,8 +4392,14 @@ def get_filename_for_file_trim(m3u8_source, title, stream_date, raw_start_time, 
 
 
 def get_filename_for_url_trim(m3u8_source, title, stream_date, raw_start_time, raw_end_time):
-    streamer = parse_streamer_from_m3u8_link(m3u8_source)
-    vod_id = parse_video_id_from_m3u8_link(m3u8_source)
+    try:
+        streamer = parse_streamer_from_m3u8_link(m3u8_source)
+    except Exception:
+        streamer = "video"
+    try:
+        vod_id = parse_video_id_from_m3u8_link(m3u8_source)
+    except Exception:
+        vod_id = "vod"
     formatted_date = format_date(stream_date) if stream_date else None
 
     filename_parts = [streamer]
@@ -4716,7 +4753,10 @@ def get_vod_or_highlight_url(vod_id):
                     base_url = url.replace("index-dvr.m3u8", "")
                     generated_m3u8 = generate_m3u8_from_segments(base_url)
                     if generated_m3u8:
-                        broadcast_id = parse_video_id_from_m3u8_link(url)
+                        try:
+                            broadcast_id = parse_video_id_from_m3u8_link(url)
+                        except Exception:
+                            broadcast_id = "video"
                         temp_m3u8_path = os.path.join(get_default_directory(), f"vod_{broadcast_id}_generated.m3u8")
                         absolute_m3u8 = make_m3u8_segments_absolute(generated_m3u8, base_url)
                         with open(temp_m3u8_path, "w", encoding="utf-8") as f:
