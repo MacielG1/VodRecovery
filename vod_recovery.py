@@ -35,7 +35,7 @@ logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
 
-CURRENT_VERSION = "1.5.18"
+CURRENT_VERSION = "1.5.19"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -1369,7 +1369,7 @@ def is_video_muted(m3u8_link):
             try:
                 vod_id = parse_video_id_from_m3u8_link(m3u8_link)
             except Exception:
-                return False
+                vod_id = hashlib.md5(m3u8_link.encode()).hexdigest()[:8]
             generated_path = os.path.join(get_default_directory(), f"vod_{vod_id}_generated.m3u8")
             if os.path.exists(generated_path):
                 with open(generated_path, "r", encoding="utf-8") as f:
@@ -1809,7 +1809,7 @@ def get_all_clip_urls(clip_format_dict, clip_format_list):
     return combined_clip_format_list
 
 
-async def fetch_status(session, url, retries=5, timeout=30):
+async def fetch_status(session, url, retries=8, timeout=35, error_stats=None):
     for attempt in range(retries):
         try:
             async with session.get(url, timeout=timeout) as response:
@@ -1824,11 +1824,22 @@ async def fetch_status(session, url, retries=5, timeout=30):
                         data = await response.read()
                         if data:
                             return url
+                elif error_stats is not None and attempt == retries - 1:
+                    error_stats["http_other"] = error_stats.get("http_other", 0) + 1
         except asyncio.TimeoutError:
-            if attempt == retries - 1:
-                pass
+            if attempt == retries - 1 and error_stats is not None:
+                error_stats["timeout"] = error_stats.get("timeout", 0) + 1
+                error_stats.setdefault("failed_urls", []).append(url)
         except Exception as e:
-            pass
+            if attempt == retries - 1 and error_stats is not None:
+                error_type = type(e).__name__
+                error_msg = str(e)
+                if "DNS" in error_type or "DNS" in error_msg or "no data" in error_msg:
+                    pass
+                else:
+                    error_stats["exception"] = error_stats.get("exception", 0) + 1
+                    error_stats["last_error"] = f'{error_type}: {error_msg}'
+                    error_stats.setdefault("failed_urls", []).append(url)
         if attempt != retries - 1:
             await asyncio.sleep(1)
     return None
@@ -1848,38 +1859,62 @@ async def get_vod_urls(streamer_name, video_id, start_timestamp):
         for quality in qualities
     ]
 
-    successful_url = None
-    progress_printed = False
+    async def search_urls(url_list, error_stats, label=""):
+        successful_url = None
+        progress_printed = False
+        try:
+            connector = aiohttp.TCPConnector(limit=100, force_close=True)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                tasks = [fetch_status(session, url, error_stats=error_stats) for url in url_list]
+                task_objects = [asyncio.create_task(task) for task in tasks]
 
-    try:
-        connector = aiohttp.TCPConnector(limit=100, force_close=True)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            tasks = [fetch_status(session, url) for url in m3u8_link_list]
-            task_objects = [asyncio.create_task(task) for task in tasks]
+                for index, task in enumerate(asyncio.as_completed(task_objects), 1):
+                    try:
+                        url = await task
+                        print(f"\rSearching {index}/{len(url_list)} URLs{label}", end="", flush=True)
+                        progress_printed = True
+                        if url:
+                            successful_url = url
+                            print("\n" if progress_printed else "\n\n")
+                            print(f"\033[92m✓ Found URL: {successful_url}\033[0m\n")
+                            for task_obj in task_objects:
+                                try:
+                                    task_obj.cancel()
+                                except Exception:
+                                    pass
+                            break
+                    except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionResetError, OSError):
+                        continue
+                    except Exception:
+                        continue
 
-            for index, task in enumerate(asyncio.as_completed(task_objects), 1):
-                try:
-                    url = await task
-                    print(f"\rSearching {index}/{len(m3u8_link_list)} URLs", end="", flush=True)
-                    progress_printed = True
-                    if url:
-                        successful_url = url
-                        print("\n" if progress_printed else "\n\n")
-                        print(f"\033[92m✓ Found URL: {successful_url}\033[0m\n")
-                        for task_obj in task_objects:
-                            try:
-                                task_obj.cancel()
-                            except Exception:
-                                pass
-                        break
-                except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionResetError, OSError):
-                    continue
-                except Exception:
-                    continue
+        except Exception as e:
+            print(f"\n\033[91m✖ Error during URL search: {str(e)}\033[0m")
+        return successful_url
 
-    except Exception as e:
-        print(f"\n\033[91m✖ Error during URL search: {str(e)}\033[0m")
-        return None
+    error_stats = {}
+    successful_url = await search_urls(m3u8_link_list, error_stats)
+
+    failed_urls = error_stats.get("failed_urls", [])
+    if not successful_url and failed_urls:
+        print(f"\n\033[93m  {len(failed_urls)} URLs failed due to network errors, retrying them...\033[0m")
+        retry_stats = {}
+        successful_url = await search_urls(failed_urls, retry_stats, label=" (retry)")
+        if not successful_url:
+            error_stats = retry_stats
+
+    if not successful_url and error_stats:
+        timeouts = error_stats.get("timeout", 0)
+        exceptions = error_stats.get("exception", 0)
+        issues = []
+        if timeouts > 0:
+            issues.append(f"{timeouts} timeouts")
+        if exceptions > 0:
+            issues.append(f"{exceptions} connection errors")
+        if issues:
+            print(f"\n\033[93m  Network or connection issues: {', '.join(issues)}\033[0m")
+            if error_stats.get("last_error"):
+                print(f"\033[93m  Last error: {error_stats['last_error']}\033[0m")
 
     return successful_url
 
@@ -2469,10 +2504,13 @@ def parse_twitchtracker_duration_data(bs):
 def parse_duration_twitchtracker(twitchtracker_url, try_alternative=True):
     try:
         # Method 1: Using requests
-        response = requests.get(twitchtracker_url, headers=return_user_agent(), timeout=10)
-        if response.status_code == 200:
-            bs = BeautifulSoup(response.content, "html.parser")
-            return parse_twitchtracker_duration_data(bs), response.text
+        try:
+            response = requests.get(twitchtracker_url, headers=return_user_agent(), timeout=10)
+            if response.status_code == 200:
+                bs = BeautifulSoup(response.content, "html.parser")
+                return parse_twitchtracker_duration_data(bs), response.text
+        except Exception:
+            pass
 
         # Method 2: Using Selenium
         print("Opening Twitchtracker with browser...")
@@ -2492,7 +2530,7 @@ def parse_duration_twitchtracker(twitchtracker_url, try_alternative=True):
 
 
 def parse_sullygnome_duration_data(bs):
-    sullygnome_duration = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})[7].text.split(",")
+    sullygnome_duration = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})[6].text.split(",")
     sullygnome_duration_in_minutes = parse_website_duration(sullygnome_duration)
     return sullygnome_duration_in_minutes
 
@@ -2500,10 +2538,13 @@ def parse_sullygnome_duration_data(bs):
 def parse_duration_sullygnome(sullygnome_url):
     try:
         # Method 1: Using requests
-        response = requests.get(sullygnome_url, headers=return_user_agent(), timeout=10)
-        if response.status_code == 200:
-            bs = BeautifulSoup(response.content, "html.parser")
-            return parse_sullygnome_duration_data(bs)
+        try:
+            response = requests.get(sullygnome_url, headers=return_user_agent(), timeout=10)
+            if response.status_code == 200:
+                bs = BeautifulSoup(response.content, "html.parser")
+                return parse_sullygnome_duration_data(bs)
+        except Exception:
+            pass
 
         # Method 2: Using Selenium
         print("Opening Sullygnome with browser...")
@@ -2647,12 +2688,15 @@ def parse_datetime_streamscharts(streamscharts_url, skip_gql=False):
                 return stream_datetime
 
         # Method 2: Using requests
-        response = requests.get(
-            streamscharts_url, headers=return_user_agent(), timeout=10
-        )
-        if response.status_code == 200:
-            bs = BeautifulSoup(response.content, "html.parser")
-            return parse_streamscharts_datetime_data(bs)
+        try:
+            response = requests.get(
+                streamscharts_url, headers=return_user_agent(), timeout=10
+            )
+            if response.status_code == 200:
+                bs = BeautifulSoup(response.content, "html.parser")
+                return parse_streamscharts_datetime_data(bs)
+        except Exception:
+            pass
 
         # Method 3: Using Selenium
         print("\nOpening Streamscharts with browser...")
@@ -2690,10 +2734,13 @@ def parse_datetime_twitchtracker(twitchtracker_url, skip_gql=False):
                 return stream_datetime
 
         # Method 2: Using requests
-        response = requests.get(twitchtracker_url, headers=return_user_agent(), timeout=10)
-        if response.status_code == 200:
-            bs = BeautifulSoup(response.content, "html.parser")
-            return parse_twitchtracker_datetime_data(bs)
+        try:
+            response = requests.get(twitchtracker_url, headers=return_user_agent(), timeout=10)
+            if response.status_code == 200:
+                bs = BeautifulSoup(response.content, "html.parser")
+                return parse_twitchtracker_datetime_data(bs)
+        except Exception:
+            pass
 
         # Method 3: Using Selenium
         print("\nOpening Twitchtracker with browser...")
@@ -2723,12 +2770,12 @@ def parse_datetime_twitchtracker(twitchtracker_url, skip_gql=False):
 
 
 def parse_sullygnome_datetime_data(bs):
-    stream_date = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})[6].text
+    stream_date = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})[5].text
     modified_stream_date = remove_chars_from_ordinal_numbers(stream_date)
     formatted_stream_date = datetime.strptime(f"{datetime.now().year} {modified_stream_date}", "%Y %A %d %B %I:%M%p").strftime("%m-%d %H:%M:%S")
     sullygnome_datetime = str(datetime.now().year) + "-" + formatted_stream_date
 
-    sullygnome_duration = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})[7].text.split(",")
+    sullygnome_duration = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})[6].text.split(",")
     sullygnome_duration_in_minutes = parse_website_duration(sullygnome_duration)
 
     return sullygnome_datetime, sullygnome_duration_in_minutes
@@ -2745,10 +2792,13 @@ def parse_datetime_sullygnome(sullygnome_url, skip_gql=False):
             if stream_datetime and stream_datetime != (None, None):
                 return stream_datetime
         # Method 2: Using requests
-        response = requests.get(sullygnome_url, headers=return_user_agent(), timeout=10)
-        if response.status_code == 200:
-            bs = BeautifulSoup(response.content, "html.parser")
-            return parse_sullygnome_datetime_data(bs)
+        try:
+            response = requests.get(sullygnome_url, headers=return_user_agent(), timeout=10)
+            if response.status_code == 200:
+                bs = BeautifulSoup(response.content, "html.parser")
+                return parse_sullygnome_datetime_data(bs)
+        except Exception:
+            pass
 
         # Method 3: Using Selenium
         print("\nOpening Sullygnome with browser...")
@@ -4701,8 +4751,11 @@ def fetch_twitch_data(vod_id, retries=3, delay=5):
 def get_vod_or_highlight_url(vod_id):
     print(f"\nSearching URL for Vod {vod_id}...")
     url = f"https://usher.ttvnw.net/vod/{vod_id}.m3u8"
-    response = requests.get(url, timeout=30)
-    if response.status_code != 200:
+    try:
+        response = requests.get(url, timeout=30)
+    except Exception:
+        response = None
+    if response is None or response.status_code != 200:
         data = fetch_twitch_data(vod_id)
 
         if data is None:
@@ -4746,7 +4799,10 @@ def get_vod_or_highlight_url(vod_id):
                 url = f"https://{domain}/{vod_special_id}/chunked/index-dvr.m3u8"
 
             if url is not None:
-                response = requests.get(url, timeout=30)
+                try:
+                    response = requests.get(url, timeout=30)
+                except Exception:
+                    return None, None, None
                 if response.status_code == 200:
                     return url, vod_data.get("title"), vod_data.get("createdAt")
                 elif response.status_code in (403, 404, 410):
@@ -4805,7 +4861,7 @@ def twitch_recover(link=None):
         input("Press Enter to continue...")
         return_to_main_menu()
 
-    print(f"\n\033[92m\u2713 Found URL: {m3u8_url}\n\033[0m")
+    print(f"\n\033[92m✓ Found URL: {m3u8_url}\n\033[0m")
 
     m3u8_source = process_m3u8_configuration(m3u8_url, skip_check=True)
     return handle_download_menu(m3u8_source, title=title, stream_datetime=format_datetime)
