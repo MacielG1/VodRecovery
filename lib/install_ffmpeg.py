@@ -9,7 +9,9 @@ def get_ffmpeg_location():
         try:
             if subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0:
                 return "ffmpeg"
-        except Exception:
+        except FileNotFoundError:
+            pass
+        except subprocess.CalledProcessError:
             pass
         if path.exists(ffdl.ffmpeg_path):
             return ffdl.ffmpeg_path
