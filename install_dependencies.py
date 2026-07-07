@@ -36,7 +36,10 @@ def install_requirements(requirements_path):
             base_name_for_pip = requirement["name_for_pip"]
             print(f"\n\033[34mFailed to install {full_spec_for_pip}. Trying again...\033[0m")
             print(f"Installing {base_name_for_pip}...")
-            subprocess.run([sys.executable, "-m", "pip", "install", base_name_for_pip, "-q", "--no-warn-conflicts"], check=True)
+            try:
+                subprocess.run([sys.executable, "-m", "pip", "install", base_name_for_pip, "-q", "--no-warn-conflicts"], check=True)
+            except subprocess.CalledProcessError:
+                print(f"\n\033[31mFailed to install {base_name_for_pip}. Please install it manually.\033[0m")
 
 
 def normalize_requirement_line(line):
