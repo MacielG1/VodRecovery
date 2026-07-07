@@ -17,26 +17,14 @@
   },
   "CLIP_TYPE_MENU": {
     "1) Recover All Clips from a VOD": "Recovers all clips from a single video.",
-    "2) Find Random Clips from a VOD": "Recovers a random set of clips from a single video.",
-    "3) Download Clip from Twitch URL": "Downloads clips from a Twitch URL that are still available on Twitch.",
-    "4) Bulk Recover Clips from SullyGnome CSV Export": "Recovers all clips based on a CSV file of streams exported from SullyGnome.",
-    "5) Return": "Returns to main menu."
-  },
-  "CLIP_RECOVERY_MENU": {
-    "1) Website-Based Clip Recovery": "Recovers clips by retrieving stream data from websites.",
-    "2) Manual Clip Recovery": "Recovers clips using manual input of stream information.",
-    "3) Return": "Returns to main menu."
+    "2) Download Clip from Twitch URL": "Downloads clips from a Twitch URL that are still available on Twitch.",
+    "3) Bulk Recover Clips from SullyGnome CSV Export": "Recovers all clips based on a CSV file of streams exported from SullyGnome.",
+    "4) Return": "Returns to main menu."
   },
   "BULK_CLIP_RECOVERY_MENU": {
     "1) Single CSV File": "Recovers clips based on a single CSV file.",
     "2) Multiple CSV Files": "Recovers clips based on multiple CSV files.",
     "3) Return": "Returns to main menu."
-  },
-  "CLIP_FORMAT_MENU": {
-    "1) Default Format ([VodID]-offset-[interval])": "Uses the default naming format for clips. (August 2016 - Present)",
-    "2) Alternate Format (vod-[VodID]-offset-[interval])": "Uses an alternate naming format for clips. (Any period of time HOWEVER it uses the original VodID from Twitch)",
-    "3) Legacy Format ([VodID]-index-[interval])": "Uses a legacy naming format for clips. (May 28th, 2016 - August 2016)",
-    "4) Return": "Returns to main menu."
   },
   "EXTRA_M3U8_OPTIONS_MENU": {
     "1) Check if M3U8 file has muted segments": "Checks if the M3U8 file has muted segments.",
@@ -55,9 +43,10 @@
     "2) Set Download Directory": "Sets the default location for the downloads.",
     "3) Set Default Downloader": "Sets the default downloader to use for downloading videos (ffmpeg or yt-dlp).",
     "4) Check for Updates": "Checks for updates to the application.",
-    "5) Open settings.json file": "Opens the settings.json file in the default text editor.",
-    "6) Help": "Displays an explanation of each menu option",
-    "7) Return": "Returns to main menu."
+    "5) Update yt-dlp": "Updates the yt-dlp downloader to the latest version.",
+    "6) Open settings.json file": "Opens the settings.json file in the default text editor.",
+    "7) Help": "Displays an explanation of each menu option",
+    "8) Return": "Returns to main menu."
   },
   "PLAYING_M3U8_FILE": {
     "1": "Download the video file using option 3 and play it with VLC or another player.",
