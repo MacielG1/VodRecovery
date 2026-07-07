@@ -35,7 +35,7 @@ logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
 
-CURRENT_VERSION = "1.5.19"
+CURRENT_VERSION = "1.5.20"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -233,28 +233,6 @@ def print_bulk_clip_recovery_menu():
             if choice not in range(1, len(bulk_clip_recovery_options) + 1):
                 raise ValueError("Invalid option")
             return str(choice)
-        except ValueError:
-            print("\n✖  Invalid option! Please try again:\n")
-
-
-def print_clip_format_menu():
-    clip_format_options = [
-        "1) Default Format ([VodID]-offset-[interval])",
-        "2) Alternate Format (vod-[VodID]-offset-[interval])",
-        "3) Legacy Format ([VodID]-index-[interval])",
-        "4) Return",
-    ]
-    print()
-    while True:
-        print("\n".join(clip_format_options))
-        try:
-            choice = int(input("\nSelect Clip URL Format: "))
-            if choice == 4:
-                return_to_main_menu()
-            if choice not in range(1, len(clip_format_options) + 1):
-                raise ValueError("Invalid option")
-            else:
-                return str(choice)
         except ValueError:
             print("\n✖  Invalid option! Please try again:\n")
 
@@ -1224,7 +1202,7 @@ def open_file(file_path):
         try:
             os.startfile(file_path)
         except Exception:
-            subprocess.Popen(f'start "" "{file_path}"', shell=True)
+            subprocess.Popen(["cmd", "/c", "start", "", file_path])
     elif os.name == "posix":
         subprocess.call(("xdg-open", file_path))
     else:
@@ -1311,14 +1289,6 @@ def get_use_progress_bar():
     except Exception:
         return True
         
-
-def get_current_version():
-    current_version = read_config_by_key("settings", "CURRENT_VERSION")
-    if current_version:
-        return current_version
-    else:
-        sys.exit("\033[91m \n✖  Unable to retrieve CURRENT_VERSION from the settings.json files \n\033[0m")
-
 
 def get_log_filepath(streamer_name, video_id):
     log_filename = os.path.join(get_default_directory(), f"{streamer_name}_{video_id}_log.txt")
@@ -1678,19 +1648,6 @@ def extract_offset(clip_url):
     return "0"
 
 
-def get_clip_format(video_id, offsets):
-    default_clip_list = [f"https://clips-media-assets2.twitch.tv/{video_id}-offset-{i}.mp4" for i in range(0, offsets, 2)]
-    alternate_clip_list = [f"https://clips-media-assets2.twitch.tv/vod-{video_id}-offset-{i}.mp4" for i in range(0, offsets, 2)]
-    legacy_clip_list = [f"https://clips-media-assets2.twitch.tv/{video_id}-index-{i:010}.mp4" for i in range(offsets)]
-
-    clip_format_dict = {
-        "1": default_clip_list,
-        "2": alternate_clip_list,
-        "3": legacy_clip_list,
-    }
-    return clip_format_dict
-
-
 def website_clip_recover():
     tracker_url = get_websites_tracker_url()
 
@@ -1772,7 +1729,7 @@ def handle_vod_recover(url, url_parser, datetime_parser, website_name):
     m3u8_source = process_m3u8_configuration(m3u8_link)
     m3u8_duration = return_m3u8_duration(m3u8_link)
 
-    if source_duration and int(source_duration) >= m3u8_duration + 10:
+    if m3u8_duration is not None and source_duration and int(source_duration) >= m3u8_duration + 10:
         print(f"The duration from {website_name} exceeds the M3U8 duration. This may indicate a split stream, try checking Streamscharts for another URL.\n")
     return m3u8_source, stream_datetime
 
@@ -1801,14 +1758,6 @@ def website_vod_recover():
     return_to_main_menu()
 
 
-def get_all_clip_urls(clip_format_dict, clip_format_list):
-    combined_clip_format_list = []
-    for key, value in clip_format_dict.items():
-        if key in clip_format_list:
-            combined_clip_format_list += value
-    return combined_clip_format_list
-
-
 async def fetch_status(session, url, retries=8, timeout=35, error_stats=None):
     for attempt in range(retries):
         try:
@@ -1824,6 +1773,8 @@ async def fetch_status(session, url, retries=8, timeout=35, error_stats=None):
                         data = await response.read()
                         if data:
                             return url
+                elif response.status in (403, 404, 410):
+                    return None
                 elif error_stats is not None and attempt == retries - 1:
                     error_stats["http_other"] = error_stats.get("http_other", 0) + 1
         except asyncio.TimeoutError:
@@ -2463,7 +2414,10 @@ def selenium_cleanup():
 
 
 def parse_streamscharts_duration_data(bs):
-    streamscharts_duration = bs.find_all("div", {"class": "text-xs font-bold"})[3].text
+    elements = bs.find_all("div", {"class": "text-xs font-bold"})
+    if len(elements) <= 3:
+        return None
+    streamscharts_duration = elements[3].text
     streamscharts_duration_in_minutes = parse_website_duration(streamscharts_duration)
     return streamscharts_duration_in_minutes
 
@@ -2496,7 +2450,10 @@ def parse_duration_streamscharts(streamscharts_url):
 
 
 def parse_twitchtracker_duration_data(bs):
-    twitchtracker_duration = bs.find_all("div", {"class": "g-x-s-value"})[0].text
+    elements = bs.find_all("div", {"class": "g-x-s-value"})
+    if not elements:
+        return None
+    twitchtracker_duration = elements[0].text
     twitchtracker_duration_in_minutes = parse_website_duration(twitchtracker_duration)
     return twitchtracker_duration_in_minutes
 
@@ -2530,7 +2487,10 @@ def parse_duration_twitchtracker(twitchtracker_url, try_alternative=True):
 
 
 def parse_sullygnome_duration_data(bs):
-    sullygnome_duration = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})[6].text.split(",")
+    elements = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})
+    if len(elements) <= 6:
+        return None
+    sullygnome_duration = elements[6].text.split(",")
     sullygnome_duration_in_minutes = parse_website_duration(sullygnome_duration)
     return sullygnome_duration_in_minutes
 
@@ -2658,8 +2618,11 @@ def scrape_clip_slugs_from_tracker_page(tracker_url, prefetched_html=None):
 
 
 def parse_streamscharts_datetime_data(bs):
+    time_elements = bs.find_all("time", {"class": "ml-2 font-bold"})
+    if not time_elements:
+        return None, None
     stream_date = (
-        bs.find_all("time", {"class": "ml-2 font-bold"})[0]
+        time_elements[0]
         .text.strip()
         .replace(",", "")
         + ":00"
@@ -2668,8 +2631,12 @@ def parse_streamscharts_datetime_data(bs):
 
 
     try:
-        streamcharts_duration = bs.find_all("span", {"class": "mx-2 font-bold"})[0].text
-        streamcharts_duration_in_minutes = parse_website_duration(streamcharts_duration)
+        span_elements = bs.find_all("span", {"class": "mx-2 font-bold"})
+        if not span_elements:
+            streamcharts_duration_in_minutes = None
+        else:
+            streamcharts_duration = span_elements[0].text
+            streamcharts_duration_in_minutes = parse_website_duration(streamcharts_duration)
     except Exception:
         streamcharts_duration_in_minutes = None
 
@@ -2712,10 +2679,17 @@ def parse_datetime_streamscharts(streamscharts_url, skip_gql=False):
 
 
 def parse_twitchtracker_datetime_data(bs):
-    twitchtracker_datetime = bs.find_all("div", {"class": "stream-timestamp-dt"})[0].text
+    dt_elements = bs.find_all("div", {"class": "stream-timestamp-dt"})
+    if not dt_elements:
+        return None, None
+    twitchtracker_datetime = dt_elements[0].text
     try:
-        twitchtracker_duration = bs.find_all("div", {"class": "g-x-s-value"})[0].text
-        twitchtracker_duration_in_minutes = parse_website_duration(twitchtracker_duration)
+        value_elements = bs.find_all("div", {"class": "g-x-s-value"})
+        if not value_elements:
+            twitchtracker_duration_in_minutes = None
+        else:
+            twitchtracker_duration = value_elements[0].text
+            twitchtracker_duration_in_minutes = parse_website_duration(twitchtracker_duration)
     except Exception:
         twitchtracker_duration_in_minutes = None
 
@@ -2770,13 +2744,21 @@ def parse_datetime_twitchtracker(twitchtracker_url, skip_gql=False):
 
 
 def parse_sullygnome_datetime_data(bs):
-    stream_date = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})[5].text
+    elements = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})
+    if len(elements) <= 5:
+        return None, None
+    stream_date = elements[5].text
     modified_stream_date = remove_chars_from_ordinal_numbers(stream_date)
-    formatted_stream_date = datetime.strptime(f"{datetime.now().year} {modified_stream_date}", "%Y %A %d %B %I:%M%p").strftime("%m-%d %H:%M:%S")
-    sullygnome_datetime = str(datetime.now().year) + "-" + formatted_stream_date
+    current_year = datetime.now().year
+    parsed_date = datetime.strptime(f"{current_year} {modified_stream_date}", "%Y %A %d %B %I:%M%p")
+    if parsed_date > datetime.now():
+        parsed_date = parsed_date.replace(year=current_year - 1)
+    sullygnome_datetime = parsed_date.strftime("%Y-%m-%d %H:%M:%S")
 
-    sullygnome_duration = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})[6].text.split(",")
-    sullygnome_duration_in_minutes = parse_website_duration(sullygnome_duration)
+    sullygnome_duration_in_minutes = None
+    if len(elements) > 6:
+        sullygnome_duration = elements[6].text.split(",")
+        sullygnome_duration_in_minutes = parse_website_duration(sullygnome_duration)
 
     return sullygnome_datetime, sullygnome_duration_in_minutes
 
@@ -2824,7 +2806,7 @@ def unmute_vod(m3u8_link):
         file_contents = video_file.readlines()
         video_file.seek(0)
 
-        is_muted = is_video_muted(m3u8_link)
+        is_muted = "unmuted" in "".join(file_contents)
         base_link = m3u8_link.replace("index-dvr.m3u8", "")
 
         for line in file_contents:
@@ -2873,25 +2855,25 @@ def mark_invalid_segments_in_playlist(m3u8_link):
 
     with open(vod_file_path, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
-
+        
+    file_segments = [line for line in lines if line.startswith("http")]
     print("Checking for invalid segments...")
-    segments = asyncio.run(validate_playlist_segments(get_all_playlist_segments(m3u8_link)))
+    valid_segments = asyncio.run(validate_playlist_segments(file_segments))
 
-    if not segments:
+    if not valid_segments:
         if "/highlight" not in m3u8_link:
             print("No segments are valid. Cannot generate M3U8! Returning to main menu.")
         os.remove(vod_file_path)
         return
-    
-    playlist_segments = [segment for segment in segments if segment in lines]
+
+    valid_set = set(valid_segments)
     modified_playlist = []
     for line in lines:
-        if line in playlist_segments:
-            modified_playlist.append(line)
-        elif line.startswith("#"):
-            modified_playlist.append(line)
-        elif line.endswith(".ts"):
-            modified_playlist.append("#" + line)
+        if line.startswith("http"):
+            if line in valid_set:
+                modified_playlist.append(line)
+            else:
+                modified_playlist.append("#" + line)
         else:
             modified_playlist.append(line)
     with open(vod_file_path, "w", encoding="utf-8") as f:
@@ -2906,7 +2888,7 @@ def return_m3u8_duration(m3u8_link):
         response.raise_for_status()
         file_contents = response.text.splitlines()
     except Exception:
-        return 0
+        return None
     for line in file_contents:
         if line.startswith("#EXTINF:"):
             try:
@@ -3104,11 +3086,7 @@ async def validate_playlist_segments(segments):
     
     except Exception as e:
         print(f"\nError during segment validation: {str(e)}")
-    
-    finally:
-        if not connector.closed:
-            await connector.close()
-    
+
     print()
     if available_segment_count == len(all_segments):
         print("All Segments are Available\n")
@@ -3264,15 +3242,19 @@ def bulk_vod_recovery():
     csv_file = parse_vod_csv_file(csv_file_path)
     print()
     all_m3u8_links = []
-    for timestamp, video_id in csv_file.items():
-        print("Recovering Video:", video_id)
-        m3u8_link = asyncio.run(get_vod_urls(streamer_name.lower(), video_id, timestamp))
+    loop = asyncio.new_event_loop()
+    try:
+        for timestamp, video_id in csv_file.items():
+            print("Recovering Video:", video_id)
+            m3u8_link = loop.run_until_complete(get_vod_urls(streamer_name.lower(), video_id, timestamp))
 
-        if m3u8_link is not None:
-            processed_source = process_m3u8_configuration(m3u8_link) or m3u8_link
-            all_m3u8_links.append((video_id, processed_source))
-        else:
-            print("No VODs found using the current domain list.")
+            if m3u8_link is not None:
+                processed_source = process_m3u8_configuration(m3u8_link) or m3u8_link
+                all_m3u8_links.append((video_id, processed_source))
+            else:
+                print("No VODs found using the current domain list.")
+    finally:
+        loop.close()
     
     if all_m3u8_links:
         while True:
@@ -3295,6 +3277,8 @@ def bulk_vod_recovery():
                 if selected_vod:
                     video_id, link = selected_vod
                     handle_download_menu(link)
+                break
+            elif choice == "4":
                 break
             else:
                 print("Invalid choice. Please try again.")
@@ -3508,53 +3492,31 @@ def bulk_clip_recovery():
     input("\nPress Enter to continue...")
 
 
-def download_clips(directory, streamer_name, video_id):
-    download_directory = os.path.join(directory, f"{streamer_name.title()}_{video_id}")
-    os.makedirs(download_directory, exist_ok=True)
-    file_contents = read_text_file(get_log_filepath(streamer_name, video_id))
-    if not file_contents:
-        print("File is empty!")
-        return
-    mp4_links = [link for link in file_contents if os.path.basename(link).endswith(".mp4")]
-    for link in mp4_links:
-        try:
-            response = requests.get(link, stream=True, timeout=30)
-            if response.status_code == 200:
-                offset = extract_offset(response.url)
-                file_name = f"{streamer_name.title()}_{video_id}_{offset}{get_default_video_format()}"
-                try:
-                    with open(os.path.join(download_directory, file_name), "wb") as x:
-                        shutil.copyfileobj(response.raw, x)
-                        print(f"Downloaded: {file_name}")
-                except ValueError:
-                    print(f"Failed to download... {response.url}")
-            else:
-                print(f"Failed to download.... {response.url}")
-        except Exception:
-            print(f"Failed to download.... {link}")
-            continue
-
-    print(f"\n\033[92m\u2713 Clips downloaded to {download_directory}\033[0m")
-
-
 def download_clips_gql(directory, streamer_name, video_id, slugs, prefetched_urls=None):
     download_directory = os.path.join(directory, f"{streamer_name.title()}_{video_id}")
     os.makedirs(download_directory, exist_ok=True)
     for i, slug in enumerate(slugs, 1):
+        file_path = None
         try:
             url = prefetched_urls[i - 1] if prefetched_urls and i - 1 < len(prefetched_urls) else get_twitch_clip(slug, retries=2)
             if not url:
                 print(f"Skipping {slug} (could not get URL)")
                 continue
-            response = requests.get(url, stream=True, timeout=60)
-            if response.status_code == 200:
+            with requests.get(url, stream=True, timeout=60) as response:
+                if response.status_code != 200:
+                    print(f"Failed to download {slug}: HTTP {response.status_code}")
+                    continue
                 file_name = f"{streamer_name.title()}_{video_id}_{i:04d}_{slug[:40]}{get_default_video_format()}"
-                with open(os.path.join(download_directory, file_name), "wb") as x:
+                file_path = os.path.join(download_directory, file_name)
+                with open(file_path, "wb") as x:
                     shutil.copyfileobj(response.raw, x)
                     print(f"Downloaded: {file_name}")
-            else:
-                print(f"Failed to download {slug}: HTTP {response.status_code}")
         except Exception:
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
             print(f"Failed to download {slug}")
             continue
     print(f"\n\033[92m\u2713 Clips downloaded to {download_directory}\033[0m")
@@ -3831,6 +3793,16 @@ def handle_progress_bar(command, output_filename, m3u8_source, start_time=None, 
                         pass
         return True
     except Exception as e:
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=10)
+            except Exception:
+                try:
+                    if process.poll() is None:
+                        process.kill()
+                except Exception:
+                    pass
         print(f"Error: {str(e).strip()}")
         raise Exception from e
 
@@ -3860,20 +3832,24 @@ def is_m3u8_live(m3u8_link):
     try:
         parsed_url = urlparse(m3u8_link)
         if parsed_url.scheme in ("http", "https"):
-            try:
-                response = requests.get(m3u8_link, timeout=15)
-                response.raise_for_status()
-                return all('#EXT-X-ENDLIST' not in line for line in response.text.splitlines())
-            except Exception:
-                return True
+            for attempt in range(2):
+                try:
+                    response = requests.get(m3u8_link, timeout=15)
+                    response.raise_for_status()
+                    return all('#EXT-X-ENDLIST' not in line for line in response.text.splitlines())
+                except Exception:
+                    if attempt < 1:
+                        time.sleep(1)
+            return False
         else:
             with open(m3u8_link, 'r', encoding='utf-8', errors='ignore') as file:
                 for line in file:
                     if '#EXT-X-ENDLIST' in line:
                         return False
+                return True
     except Exception:
-        return True
-    return True
+        return False
+    return False
 
 
 def download_m3u8_video_url(m3u8_link, output_filename, from_start=False):
@@ -4915,14 +4891,14 @@ def get_twitch_clip(clip_slug, retries=3):
 
 def twitch_clip_downloader(clip_url, slug, streamer):
     print("\nDownloading Clip...")
+    download_location = os.path.join(get_default_directory(), f"{streamer}-{slug}{get_default_video_format()}")
     try:
-        response = requests.get(clip_url, stream=True, timeout=30)
-        if response.status_code != 200:
-            raise Exception("Unable to download clip!")
-        download_location = os.path.join(get_default_directory(), f"{streamer}-{slug}{get_default_video_format()}")
+        with requests.get(clip_url, stream=True, timeout=30) as response:
+            if response.status_code != 200:
+                raise Exception("Unable to download clip!")
 
-        with open(os.path.join(download_location), "wb") as file:
-            shutil.copyfileobj(response.raw, file)
+            with open(download_location, "wb") as file:
+                shutil.copyfileobj(response.raw, file)
 
         print(f"\n\033[92m\u2713 Clip downloaded to {download_location}\033[0m\n")
 
@@ -4930,6 +4906,11 @@ def twitch_clip_downloader(clip_url, slug, streamer):
             input("Press Enter to continue...")
         return True
     except Exception:
+        if os.path.exists(download_location):
+            try:
+                os.remove(download_location)
+            except Exception:
+                pass
         raise Exception("Unable to download clip!")
 
 
