@@ -35,7 +35,7 @@ logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
 
-CURRENT_VERSION = "1.5.20"
+CURRENT_VERSION = "1.5.21"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -1334,7 +1334,7 @@ def is_video_muted(m3u8_link):
     try:
         response = requests.get(m3u8_link, timeout=20)
         if response.status_code == 200:
-            return bool("unmuted" in response.text)
+            return bool("-muted" in response.text)
         elif response.status_code in (403, 404, 410):
             try:
                 vod_id = parse_video_id_from_m3u8_link(m3u8_link)
@@ -1343,7 +1343,7 @@ def is_video_muted(m3u8_link):
             generated_path = os.path.join(get_default_directory(), f"vod_{vod_id}_generated.m3u8")
             if os.path.exists(generated_path):
                 with open(generated_path, "r", encoding="utf-8") as f:
-                    return bool("unmuted" in f.read())
+                    return bool("-muted" in f.read())
             return False
     except Exception:
         pass
@@ -1759,24 +1759,32 @@ def website_vod_recover():
 
 
 async def fetch_status(session, url, retries=8, timeout=35, error_stats=None):
+    is_segment = url.endswith('.ts') or url.endswith('.mp4')
     for attempt in range(retries):
         try:
-            async with session.get(url, timeout=timeout) as response:
-                if response.status == 200:
-                    if url.endswith('.m3u8'):
-                        data = await response.text()
-                        if data and "#EXTM3U" in data:
-                            return url
-                    elif url.endswith('.ts'):
+            if is_segment:
+                async with session.head(url, timeout=timeout, allow_redirects=True) as response:
+                    if response.status == 200:
                         return url
-                    else:
-                        data = await response.read()
-                        if data:
-                            return url
-                elif response.status in (403, 404, 410):
-                    return None
-                elif error_stats is not None and attempt == retries - 1:
-                    error_stats["http_other"] = error_stats.get("http_other", 0) + 1
+                    elif response.status in (403, 404, 410):
+                        return None
+                    elif error_stats is not None and attempt == retries - 1:
+                        error_stats["http_other"] = error_stats.get("http_other", 0) + 1
+            else:
+                async with session.get(url, timeout=timeout) as response:
+                    if response.status == 200:
+                        if url.endswith('.m3u8'):
+                            data = await response.text()
+                            if data and "#EXTM3U" in data:
+                                return url
+                        else:
+                            data = await response.read()
+                            if data:
+                                return url
+                    elif response.status in (403, 404, 410):
+                        return None
+                    elif error_stats is not None and attempt == retries - 1:
+                        error_stats["http_other"] = error_stats.get("http_other", 0) + 1
         except asyncio.TimeoutError:
             if attempt == retries - 1 and error_stats is not None:
                 error_stats["timeout"] = error_stats.get("timeout", 0) + 1
@@ -1952,7 +1960,7 @@ def return_supported_qualities(m3u8_link):
     def check_quality(resolution):
         url = m3u8_link.replace(f"/{found_quality}/", f"/{resolution}/")
         try:
-            response = requests.get(url, timeout=20)
+            response = requests.head(url, timeout=20, allow_redirects=True)
             if response.status_code == 200:
                 return resolution
             elif response.status_code in (403, 404, 410):
@@ -2806,7 +2814,7 @@ def unmute_vod(m3u8_link):
         file_contents = video_file.readlines()
         video_file.seek(0)
 
-        is_muted = "unmuted" in "".join(file_contents)
+        is_muted = "-muted" in "".join(file_contents)
         base_link = m3u8_link.replace("index-dvr.m3u8", "")
 
         for line in file_contents:
@@ -2833,8 +2841,8 @@ def unmute_vod(m3u8_link):
                 video_file.write(line)
                 continue
 
-            if "-unmuted" in segment_uri:
-                segment_uri = segment_uri.replace("-unmuted", "-muted")
+            if "-muted" in segment_uri:
+                segment_uri = segment_uri.replace("-muted", "-unmuted")
             absolute_segment = ensure_absolute_uri(segment_uri, base_link)
 
             video_file.write(f"{absolute_segment}\n")
@@ -3049,41 +3057,42 @@ async def validate_playlist_segments(segments):
     available_segment_count = 0
     
     batch_size = 250
-    
+
     connector = aiohttp.TCPConnector(
-        limit=150,
-        force_close=True,
+        limit=75,
+        limit_per_host=75,
         enable_cleanup_closed=True,
         ssl=False
     )
-    
-    timeout = aiohttp.ClientTimeout(total=20, connect=5)
-    
+
+    timeout = aiohttp.ClientTimeout(total=15, connect=5)
+
     try:
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            print(f"\rChecking segments 0 / {len(all_segments)}", end="", flush=True)
+            checked = 0
             for i in range(0, len(all_segments), batch_size):
                 batch = all_segments[i:i + batch_size]
-                tasks = []
-                
-                for url in batch:
-                    task = asyncio.create_task(fetch_status(session, url, retries=3, timeout=30))
-                    tasks.append(task)
-                
+                tasks = [asyncio.create_task(fetch_status(session, url, retries=2, timeout=10)) for url in batch]
+
                 try:
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-                    for url in results:
-                        if url and not isinstance(url, Exception):
+                    for coro in asyncio.as_completed(tasks):
+                        try:
+                            url = await coro
+                        except Exception:
+                            url = None
+                        checked += 1
+                        if url:
                             available_segment_count += 1
                             valid_segments.append(url)
-                    
-                    print(f"\rChecking segments {min(i + batch_size, len(all_segments))} / {len(all_segments)}", end="", flush=True)
-                
+                        print(f"\rChecking segments {checked} / {len(all_segments)}", end="", flush=True)
+
                 except Exception as e:
                     print(f"\nError processing batch: {str(e)}")
                     continue
-                
+
                 await asyncio.sleep(0.5)
-    
+
     except Exception as e:
         print(f"\nError during segment validation: {str(e)}")
 
