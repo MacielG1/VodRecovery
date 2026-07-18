@@ -1,12 +1,32 @@
 import os
 import re
+import shutil
 import subprocess
 import sys
 
-try:
-    from packaging.version import Version, InvalidVersion
-except ImportError:
-    from pip._vendor.packaging.version import Version, InvalidVersion
+def ensure_packaging():
+    try:
+        from packaging.version import Version, InvalidVersion
+        return Version, InvalidVersion
+    except ImportError:
+        pass
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "packaging", "-q"],
+                       capture_output=True, text=True, check=True)
+        from packaging.version import Version, InvalidVersion
+        return Version, InvalidVersion
+    except subprocess.CalledProcessError as e:
+        if e.stderr:
+            print(e.stderr)
+        print("Failed to install the 'packaging' module. Check your internet connection or install it manually with: pip install packaging")
+        input("\nPress Enter to exit...")
+        sys.exit(1)
+    except (OSError, ImportError) as e:
+        print(f"Failed to set up the 'packaging' module: {e}")
+        input("\nPress Enter to exit...")
+        sys.exit(1)
+
+Version, InvalidVersion = ensure_packaging()
 
 from importlib.metadata import version as get_installed_distribution_version, PackageNotFoundError
 
@@ -15,6 +35,7 @@ def install_requirements(requirements_path):
     with open(requirements_path, encoding='utf-8') as f:
         requirement_lines = f.read().splitlines()
 
+    failed_requirements = []
     for raw_line in requirement_lines:
         requirement = normalize_requirement_line(raw_line)
         if requirement is None:
@@ -28,18 +49,37 @@ def install_requirements(requirements_path):
         if is_requirement_satisfied(dist_name, operator, version_str):
             continue
 
+        if dist_name == "yt-dlp" and shutil.which("yt-dlp"):
+            print(f"Found standalone yt-dlp binary at {shutil.which('yt-dlp')} — skipping pip install.")
+            continue
+
         try:
             spec_to_install = full_spec_for_pip if operator in ('==', '>=') else requirement["name_for_pip"]
             print(f"Installing {spec_to_install}...")
-            subprocess.run([sys.executable, "-m", "pip", "install", spec_to_install, "-q", "--no-warn-conflicts"], check=True)
+            result = subprocess.run([sys.executable, "-m", "pip", "install", spec_to_install, "-q", "--no-warn-conflicts"],
+                                    capture_output=True, text=True)
+            if result.returncode != 0:
+                if result.stderr:
+                    print(result.stderr)
+                raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
         except subprocess.CalledProcessError:
             base_name_for_pip = requirement["name_for_pip"]
             print(f"\n\033[34mFailed to install {full_spec_for_pip}. Trying again...\033[0m")
             print(f"Installing {base_name_for_pip}...")
             try:
-                subprocess.run([sys.executable, "-m", "pip", "install", base_name_for_pip, "-q", "--no-warn-conflicts"], check=True)
+                result = subprocess.run([sys.executable, "-m", "pip", "install", base_name_for_pip, "-q", "--no-warn-conflicts"],
+                                        capture_output=True, text=True)
+                if result.returncode != 0:
+                    if result.stderr:
+                        print(result.stderr)
+                    raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
             except subprocess.CalledProcessError:
+                failed_requirements.append(full_spec_for_pip)
                 print(f"\n\033[31mFailed to install {base_name_for_pip}. Please install it manually.\033[0m")
+
+    if failed_requirements:
+        failed = ", ".join(failed_requirements)
+        raise RuntimeError(f"Required dependencies failed to install: {failed}")
 
 
 def normalize_requirement_line(line):
@@ -122,7 +162,9 @@ if __name__ == "__main__":
         subprocess.run([sys.executable, install_ffmpeg_script], check=False)
         subprocess.run([sys.executable, vod_recovery_script], check=False)
 
-    except (OSError, subprocess.SubprocessError) as e:
+    except (OSError, subprocess.SubprocessError, RuntimeError) as e:
         print(f"An error occurred: {str(e)}")
         input("\nPress Enter to continue...")
+    except KeyboardInterrupt:
+        pass
 
