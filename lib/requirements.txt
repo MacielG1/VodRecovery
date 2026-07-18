@@ -2,6 +2,7 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 packaging>=21.0
 ffmpeg_downloader==0.4.1
-seleniumbase==4.50.6
+seleniumbase==4.51.3
 aiohttp>=3.9.5
 tqdm>=4.60.0
+yt-dlp>=2025.08.11
