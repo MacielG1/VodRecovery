@@ -9,5 +9,5 @@
     "DEFAULT_VIDEO_FORMAT": ".mp4",
     "VLC_LOCATION": "",
     "DEFAULT_DOWNLOADER": "ffmpeg",
-    "YT_DLP_OPTIONS": "--no-warnings --hls-use-mpegts"
+    "YT_DLP_OPTIONS": "--no-warnings"
 }
