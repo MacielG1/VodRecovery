@@ -44,7 +44,7 @@ except Exception:
     pass
 
 
-CURRENT_VERSION = "1.6.0"
+CURRENT_VERSION = "1.6.1"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30", "audio_only"]
 
@@ -63,7 +63,20 @@ if sys.platform == 'win32' and sys.version_info < (3, 12):
 
 class ReturnToMain(Exception):
     pass
-                
+
+
+def exit_interrupted():
+    # Flush stdout/stderr and exit on Ctrl+C without skipping cleanup.
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    raise SystemExit(0)
+
 def return_to_main_menu():
     raise ReturnToMain()
 
@@ -875,9 +888,10 @@ def fetch_recent_streams_api(streamer_name, max_streams=100):
                 if extracted_timestamp:
                     try:
                         dt_from_url = datetime.fromtimestamp(int(extracted_timestamp), timezone.utc)
-                        final_timestamp = dt_from_url.strftime("%Y-%m-%d %H:%M:%S")
-                        dt_local_from_url = dt_from_url.astimezone()
-                        final_local_timestamp = dt_local_from_url.strftime("%Y-%m-%d %H:%M:%S")
+                        if abs((dt_from_url - dt_utc).total_seconds()) < 86400:
+                            final_timestamp = dt_from_url.strftime("%Y-%m-%d %H:%M:%S")
+                            dt_local_from_url = dt_from_url.astimezone()
+                            final_local_timestamp = dt_local_from_url.strftime("%Y-%m-%d %H:%M:%S")
                     except Exception as e:
                         pass
 
@@ -1157,6 +1171,9 @@ def check_for_updates():
                             except Exception:
                                 pass
                             sys.exit(0)
+                    if get_yes_no_choice("Exit Vod Recovery now?"):
+                        print("\nExiting...\n")
+                        sys.exit(0)
                 input("\nPress Enter to continue...")
                 return_to_main_menu()
             else:
@@ -1297,6 +1314,11 @@ def write_m3u8_to_file(m3u8_link, destination_path, max_retries=5):
                 generated_m3u8 = generate_m3u8_from_segments(base_url)
                 if generated_m3u8:
                     absolute_m3u8 = make_m3u8_segments_absolute(generated_m3u8, base_url)
+                    try:
+                        with open(generated_path, "w", encoding="utf-8") as gen_file:
+                            gen_file.write(absolute_m3u8)
+                    except Exception:
+                        pass
                     with open(destination_path, "w", encoding="utf-8") as m3u8_file:
                         m3u8_file.write(absolute_m3u8)
                     return destination_path
@@ -1353,6 +1375,8 @@ def return_user_agent():
 
 
 def calculate_epoch_timestamp(timestamp, seconds):
+    if not timestamp:
+        return None
     try:
         epoch_timestamp = ((datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S") + timedelta(seconds=seconds)) - datetime(1970, 1, 1)).total_seconds()
         return epoch_timestamp
@@ -1893,9 +1917,19 @@ async def get_vod_urls(streamer_name, video_id, start_timestamp):
 
     print("\nSearching for M3U8 URL...")
 
+    epoch_by_offset = {}
+    for seconds in range(-30, 60):
+        ts = calculate_epoch_timestamp(start_timestamp, seconds)
+        if ts is None:
+            raise ValueError(
+                f"Invalid start timestamp: {start_timestamp!r}. "
+                "Expected 'YYYY-MM-DD HH:MM:SS'."
+            )
+        epoch_by_offset[seconds] = int(ts)
+
     def build_urls(quality_list):
         return [
-            f"{domain.strip()}{str(hashlib.sha1(f'{streamer_name}_{video_id}_{int(calculate_epoch_timestamp(start_timestamp, seconds))}'.encode('utf-8')).hexdigest())[:20]}_{streamer_name}_{video_id}_{int(calculate_epoch_timestamp(start_timestamp, seconds))}/{quality}/{m3u8_name}"
+            f"{domain.strip()}{hashlib.sha1(f'{streamer_name}_{video_id}_{epoch_by_offset[seconds]}'.encode('utf-8')).hexdigest()[:20]}_{streamer_name}_{video_id}_{epoch_by_offset[seconds]}/{quality}/{m3u8_name}"
             for seconds in range(-30, 60)
             for domain in domains if domain.strip()
             for quality in quality_list
@@ -1906,7 +1940,7 @@ async def get_vod_urls(streamer_name, video_id, start_timestamp):
         successful_url = None
         progress_printed = False
         try:
-            connector = aiohttp.TCPConnector(limit=100, force_close=True)
+            connector = aiohttp.TCPConnector(limit=100)
             async with aiohttp.ClientSession(connector=connector) as session:
                 tasks = [fetch_status(session, url, error_stats=error_stats, retries=5, timeout=25) for url in url_list]
                 task_objects = [asyncio.create_task(task) for task in tasks]
@@ -1949,7 +1983,7 @@ async def get_vod_urls(streamer_name, video_id, start_timestamp):
         try_more = CLI_MODE
         if not CLI_MODE:
             try:
-                try_more = await asyncio.to_thread(get_yes_no_choice, "No M3U8 URL found. Try more? (low chance)")
+                try_more = get_yes_no_choice("No M3U8 URL found. Try more? (low chance)")
             except EOFError:
                 try_more = False
         if try_more:
@@ -2087,9 +2121,9 @@ def return_supported_qualities(m3u8_link):
             chunked_future = executor.submit(get_chunked_actual_resolution, chunked_url)
         
         valid_resolutions = []
-        for future in quality_futures:
+        for future in as_completed(quality_futures):
             try:
-                result = future.result(timeout=15)
+                result = future.result()
                 if result:
                     valid_resolutions.append(result)
             except Exception:
@@ -2098,7 +2132,7 @@ def return_supported_qualities(m3u8_link):
         chunked_resolution_info = None
         if chunked_future and "chunked" in valid_resolutions:
             try:
-                chunked_resolution_info = chunked_future.result(timeout=15)
+                chunked_resolution_info = chunked_future.result()
             except Exception:
                 chunked_resolution_info = None
 
@@ -2928,8 +2962,9 @@ def unmute_vod(m3u8_link):
         file_contents = video_file.readlines()
         video_file.seek(0)
 
-        is_fmp4 = "#EXT-X-MAP" in "".join(file_contents)
-        is_muted = "-muted" in "".join(file_contents)
+        file_contents_joined = "".join(file_contents)
+        is_fmp4 = "#EXT-X-MAP" in file_contents_joined
+        is_muted = "-muted" in file_contents_joined
         base_link = m3u8_link.rsplit("/", 1)[0] + "/"
 
         for line in file_contents:
@@ -2995,7 +3030,11 @@ def mark_invalid_segments_in_playlist(m3u8_link):
 
     file_segments = [line for line in lines if line.startswith("http")]
     print("Checking for invalid segments...")
-    valid_segments = asyncio.run(validate_playlist_segments(file_segments + map_uris))
+    try:
+        valid_segments = asyncio.run(validate_playlist_segments(file_segments + map_uris))
+    except KeyboardInterrupt:
+        print("\n\nExiting...")
+        exit_interrupted()
 
     dead_maps = [uri for uri in map_uris if uri not in valid_segments]
     if dead_maps:
@@ -3084,12 +3123,14 @@ def process_m3u8_configuration(m3u8_link, skip_check=False):
     if is_blocked_vod and os.path.exists(generated_path):
         return generated_path
 
-    try:
-        playlist_segments = get_all_playlist_segments(m3u8_link)
-    except Exception as e:
-        print(f"\n\033[93m  Could not fetch playlist segments: {e}\033[0m")
-        playlist_segments = []
     check_segments = read_config_by_key("settings", "CHECK_SEGMENTS") and not skip_check
+
+    playlist_segments = []
+    if check_segments:
+        try:
+            playlist_segments = get_all_playlist_segments(m3u8_link)
+        except Exception as e:
+            print(f"\n\033[93m  Could not fetch playlist segments: {e}\033[0m")
 
     m3u8_source = None
     if is_video_muted(m3u8_link):
@@ -3122,6 +3163,9 @@ def process_m3u8_configuration(m3u8_link, skip_check=False):
             async def validate_with_timeout():
                 return await asyncio.wait_for(validate_playlist_segments(playlist_segments), timeout=60)
             asyncio.run(validate_with_timeout())
+        except KeyboardInterrupt:
+            print("\n\nExiting...")
+            exit_interrupted()
         except asyncio.TimeoutError:
             print("Segment validation timed out. Continuing without validation...")
         except Exception as e:
@@ -3234,6 +3278,9 @@ async def validate_playlist_segments(segments):
 def run_vod_recovery(streamer_name, video_id, timestamp):
     try:
         return asyncio.run(get_vod_urls(streamer_name, video_id, timestamp))
+    except KeyboardInterrupt:
+        print("\n\nExiting...")
+        exit_interrupted()
     except Exception as e:
         print(f"\n✖  Error during VOD recovery: {str(e)}")
         return None
@@ -3386,6 +3433,9 @@ def bulk_vod_recovery():
                 all_m3u8_links.append((video_id, processed_source))
             else:
                 print("No VODs found using the current domain list.")
+    except KeyboardInterrupt:
+        print("\n\nExiting...")
+        exit_interrupted()
     finally:
         loop.close()
     
@@ -3419,7 +3469,7 @@ def bulk_vod_recovery():
 
 
 def clip_recover(streamer, video_id, duration, tracker_url=None, prefetched_html=None):
-    valid_url_list = []
+    valid_clips = {}
 
     slugs = []
     if tracker_url:
@@ -3432,13 +3482,14 @@ def clip_recover(streamer, video_id, duration, tracker_url=None, prefetched_html
             print(f"\r\033[K Fetching clip {i}/{len(slugs)}: {slug[:50]}...", end="", flush=True)
             url = get_twitch_clip(slug, retries=2)
             if url:
-                valid_url_list.append(url)
-                print(f" \033[92m✔\033[0m", end="", flush=True)
+                valid_clips[slug] = url
+                print(" \033[92m✔\033[0m", end="", flush=True)
         print()
     else:
         print("No clips found! Returning to main menu.\n")
         return
 
+    valid_url_list = list(valid_clips.values())
     if valid_url_list:
         print()
         display_count = 3
@@ -3454,7 +3505,7 @@ def clip_recover(streamer, video_id, duration, tracker_url=None, prefetched_html
         for url in valid_url_list:
             write_text_file(url, get_log_filepath(streamer, video_id))
         if (read_config_by_key("settings", "AUTO_DOWNLOAD_CLIPS") or get_yes_no_choice("\nDo you want to download the recovered clips?")):
-            download_clips_gql(get_default_directory(), streamer, video_id, slugs, prefetched_urls=valid_url_list)
+            download_clips_gql(get_default_directory(), streamer, video_id, list(valid_clips.keys()), prefetched_urls=valid_clips)
         if read_config_by_key("settings", "REMOVE_LOG_FILE"):
             os.remove(get_log_filepath(streamer, video_id))
         else:
@@ -3528,12 +3579,19 @@ def parse_vod_csv_file(file_path):
 
 
 def merge_csv_files(csv_filename, directory_path):
-    csv_list = [file for file in os.listdir(directory_path) if file.endswith(".csv")]
+    merged_name = f"{csv_filename.title()}_MERGED.csv"
+    csv_list = [
+        file for file in os.listdir(directory_path)
+        if file.endswith(".csv") and file != merged_name
+    ]
     header_saved = False
-    with open(os.path.join(directory_path, f"{csv_filename.title()}_MERGED.csv"), "w", newline="", encoding="utf-8") as output_file:
+    with open(os.path.join(directory_path, merged_name), "w", newline="", encoding="utf-8") as output_file:
         writer = csv.writer(output_file)
         for file in csv_list:
             reader = read_csv_file(os.path.join(directory_path, file))
+            if not reader:
+                # Skip empty CSV files
+                continue
             header = reader[0]
             if not header_saved:
                 writer.writerow(header)
@@ -3596,22 +3654,22 @@ def bulk_clip_recovery():
             continue
 
         print(f"Found {len(slugs)} clip(s). Fetching download URLs...")
-        valid_urls = []
+        valid_clips = {}
         for i, slug in enumerate(slugs, 1):
             print(f"\r\033[K Fetching clip {i}/{len(slugs)}: {slug[:50]}...", end="", flush=True)
             url = get_twitch_clip(slug, retries=2)
             if url:
                 valid_counter += 1
-                valid_urls.append(url)
+                valid_clips[slug] = url
                 write_text_file(url, get_log_filepath(streamer_name, video_id))
-                print(f" \033[92m✔\033[0m", end="", flush=True)
+                print(" \033[92m✔\033[0m", end="", flush=True)
         print()
 
         print(f"\n\033[92m{valid_counter} Clip(s) Found\033[0m\n")
 
         if valid_counter != 0:
             if should_download:
-                download_clips_gql(get_default_directory(), streamer_name, video_id, slugs, prefetched_urls=valid_urls)
+                download_clips_gql(get_default_directory(), streamer_name, video_id, list(valid_clips.keys()), prefetched_urls=valid_clips)
                 os.remove(get_log_filepath(streamer_name, video_id))
             else:
                 if not should_keep_logs:
@@ -3631,7 +3689,7 @@ def download_clips_gql(directory, streamer_name, video_id, slugs, prefetched_url
     for i, slug in enumerate(slugs, 1):
         file_path = None
         try:
-            url = prefetched_urls[i - 1] if prefetched_urls and i - 1 < len(prefetched_urls) else get_twitch_clip(slug, retries=2)
+            url = (prefetched_urls or {}).get(slug) or get_twitch_clip(slug, retries=2)
             if not url:
                 print(f"Skipping {slug} (could not get URL)")
                 continue
@@ -3780,32 +3838,40 @@ def format_file_size(n):
 
 
 def get_m3u8_duration(m3u8_source):
-    try:
-        total_duration = 0.0
-        
-        if m3u8_source.startswith(('http://', 'https://')):
-            response = requests.get(m3u8_source, timeout=30)
-            response.raise_for_status()
-            content = response.text
-            lines = content.splitlines()
-        else:
-            with open(m3u8_source, 'r', encoding='utf-8', errors='ignore') as file:
-                lines = file.readlines()
-        
-        for line in lines:
-            line = line.strip()
-            if line.startswith('#EXTINF:'):
-                # Extract duration from #EXTINF:duration,title
-                duration_str = line.split('#EXTINF:')[1].split(',')[0]
-                try:
-                    duration = float(duration_str)
-                    total_duration += duration
-                except ValueError:
-                    continue
-                    
-        return total_duration if total_duration > 0 else None
-    except Exception:
-        return None
+    return get_m3u8_live_and_duration(m3u8_source)[1]
+
+
+def get_m3u8_live_and_duration(m3u8_source):
+    is_remote = m3u8_source.startswith(('http://', 'https://'))
+    for attempt in range(2):
+        try:
+            if is_remote:
+                response = requests.get(m3u8_source, timeout=30)
+                response.raise_for_status()
+                lines = response.text.splitlines()
+            else:
+                with open(m3u8_source, 'r', encoding='utf-8', errors='ignore') as file:
+                    lines = file.read().splitlines()
+
+            is_live = True
+            total_duration = 0.0
+            for line in lines:
+                line = line.strip()
+                if line == '#EXT-X-ENDLIST':
+                    is_live = False
+                elif line.startswith('#EXTINF:'):
+                    duration_str = line.split('#EXTINF:')[1].split(',')[0]
+                    try:
+                        total_duration += float(duration_str)
+                    except ValueError:
+                        continue
+            duration = total_duration if total_duration > 0 else None
+            return is_live, duration
+        except Exception:
+            if attempt < 1 and is_remote:
+                time.sleep(1)
+                continue
+    return False, None
 
 
 def seconds_to_time_str(seconds):
@@ -3844,11 +3910,12 @@ def handle_progress_bar(command, output_filename, m3u8_source, start_time=None, 
         if start_time and end_time:
             duration_override = calculate_slice_duration(start_time, end_time)
         else:
-            if is_m3u8_live(m3u8_source):
+            is_live, duration = get_m3u8_live_and_duration(m3u8_source)
+            if is_live:
                 live_progress = True
                 duration_override = None
             else:
-                duration_override = get_m3u8_duration(m3u8_source)
+                duration_override = duration
         
         try:
             if "-y" in command:
@@ -3874,6 +3941,8 @@ def handle_progress_bar(command, output_filename, m3u8_source, start_time=None, 
             pbar = tqdm(total=100, position=0, desc=short_title, leave=None, colour="blue", unit="%", bar_format="{l_bar}{bar}| {percentage:.1f}/100%{postfix}")
 
         current_seconds = 0
+        last_size_check = 0.0
+        cached_size_str = "0 B"
         with pbar:
             while True:
                 if process.stdout is None:
@@ -3905,13 +3974,18 @@ def handle_progress_bar(command, output_filename, m3u8_source, start_time=None, 
                     current_time_str = seconds_to_time_str(current_seconds)
                     total_time_str = seconds_to_time_str(duration_override)
 
-                size_str = "0 B"
-                try:
-                    file_path = os.path.normpath(output_path_cmd)
-                    if os.path.exists(file_path):
-                        size_str = format_file_size(os.path.getsize(file_path))
-                except Exception:
-                    pass
+                now = time.monotonic()
+                if now - last_size_check >= 0.5:
+                    last_size_check = now
+                    try:
+                        file_path = os.path.normpath(output_path_cmd)
+                        if os.path.exists(file_path):
+                            cached_size_str = format_file_size(os.path.getsize(file_path))
+                        else:
+                            cached_size_str = "0 B"
+                    except Exception:
+                        pass
+                size_str = cached_size_str
 
                 if duration_override:
                     postfix_str = f"[{current_time_str} / {total_time_str}] • {size_str}"
@@ -4872,12 +4946,16 @@ def generate_m3u8_from_segments(base_url, segment_duration=10.0):
     chunk_ext = ".ts"
 
     thread_local = threading.local()
+    created_sessions = []
+    sessions_lock = threading.Lock()
 
     def get_probe_session():
         session = getattr(thread_local, "session", None)
         if session is None:
             session = requests.Session()
             thread_local.session = session
+            with sessions_lock:
+                created_sessions.append(session)
         return session
 
     # Probe a single segment index and return the best available variant.
@@ -4929,14 +5007,22 @@ def generate_m3u8_from_segments(base_url, segment_duration=10.0):
 
     segment_types = {}
     failed_probes = []
-    with ThreadPoolExecutor(max_workers=50) as executor:
-        futures = {executor.submit(probe_variant, i): i for i in range(last_segment + 1)}
-        for future in as_completed(futures):
-            n = futures[future]
-            result = future.result()
-            if result is None:
-                failed_probes.append(n)
-            segment_types[n] = result or "plain"
+    try:
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            futures = {executor.submit(probe_variant, i): i for i in range(last_segment + 1)}
+            for future in as_completed(futures):
+                n = futures[future]
+                result = future.result()
+                if result is None:
+                    failed_probes.append(n)
+                segment_types[n] = result or "plain"
+    finally:
+        # Close per-thread sessions to release pooled connections.
+        for session in created_sessions:
+            try:
+                session.close()
+            except Exception:
+                pass
 
     if failed_probes:
         failed_probes.sort()
@@ -5149,21 +5235,31 @@ def get_twitch_clip(clip_slug, retries=3):
             response_endpoint.raise_for_status()
             response = response_endpoint.json()
 
-            if "error" in response or "errors" in response:
-                raise ValueError(response.get("message", "Unable to get clip!"))
+            payload = response[0] if isinstance(response, list) and response else response
+            if not isinstance(payload, dict) or payload.get("errors") or payload.get("error"):
+                raise ValueError("Unable to get clip!")
 
-            playback_access_token = response[0]["data"]["clip"]["playbackAccessToken"]
+            clip = (payload.get("data") or {}).get("clip")
+            if not clip:
+                # Clip was deleted or the slug is invalid
+                return None
+
+            playback_access_token = clip.get("playbackAccessToken")
+            video_qualities = clip.get("videoQualities") or []
+            if not playback_access_token or not video_qualities:
+                return None
+
             url = (
-                response[0]["data"]["clip"]["videoQualities"][0]["sourceURL"]
+                video_qualities[0]["sourceURL"]
                 + "?sig=" + playback_access_token["signature"]
                 + "&token=" + requests.utils.quote(playback_access_token["value"])
             )
             return url
 
-        except (requests.exceptions.RequestException, ValueError):
-            print("\nRetrying...")
+        except (requests.exceptions.RequestException, ValueError, KeyError, TypeError, IndexError):
             if attempt < retries - 1:
-                time.sleep(3) 
+                print("\nRetrying...")
+                time.sleep(3)
 
     print("\n✖  Unable to get clip! Check the URL and try again.\n")
     if CLI_MODE:
