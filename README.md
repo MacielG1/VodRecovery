@@ -58,6 +58,9 @@ python vod_recovery.py --clip https://twitch.tv/streamer/clip/1234567890
 python vod_recovery.py --m3u8 "https://example.com/index-dvr.m3u8"
 python vod_recovery.py --m3u8 "https://example.com/index-dvr.m3u8" --start 00:10:00 --end 00:20:00
 python vod_recovery.py --m3u8 "https://example.com/index-dvr.m3u8" --watch
+python vod_recovery.py --url https://twitchtracker.com/streamer/streams/1234567890 --quality 1080p60
+python vod_recovery.py --m3u8 "https://example.com/index-dvr.m3u8" --quality best
+python vod_recovery.py --url https://twitchtracker.com/streamer/streams/1234567890 --metadata
 ```
 
 - **URL downloads** `--url <link>` supports Twitch, TwitchTracker, Streamscharts, and SullyGnome pages.
@@ -66,6 +69,8 @@ python vod_recovery.py --m3u8 "https://example.com/index-dvr.m3u8" --watch
 - **Watch live stream** Add `--watch` to watch the live stream in VLC.
 - **Clips** Use `--clip <url>` for direct clip retrieval.
 - **Direct M3U8** Use `--m3u8 <m3u8_url>` to download, trim, or watch directly from an M3U8 URL.
+- **Quality** `--quality <name>` skips the interactive quality prompt. Accepts `chunked`, `2160p60`, `1080p60`, `720p60`, `720p30`, `480p30`, `360p30`, `160p30`, `audio_only`, plus the aliases `best` and `source` (= `chunked`).
+- **Metadata** `--metadata` prints stream info as JSON and exits without downloading: `streamer`, `video_id`, `title`, `stream_datetime`, `duration_seconds`, `duration`, `available_qualities`, `m3u8_url`. Combine with `--url` or `--m3u8`. Useful for scripting chunked downloads — grab `m3u8_url` once, then loop `--m3u8 <url> --start --end --quality`.
 
 ## Notes
 
