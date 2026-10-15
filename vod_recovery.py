@@ -864,10 +864,10 @@ def fetch_recent_streams_api(streamer_name, max_streams=100):
                         url_parts = preview_url.split('/')
                         for part in url_parts:
                             if f'_{streamer_name}_' in part:
-                                segments = part.split('_')
-                                if len(segments) >= 4:
-                                    extracted_vod_id = segments[2]
-                                    extracted_timestamp = segments[3]
+                                segments = part.split(f'_{streamer_name}_', 1)[1].split('_')
+                                if len(segments) >= 2:
+                                    extracted_vod_id = segments[0]
+                                    extracted_timestamp = segments[1]
                                     break
                     except Exception as e:
                         pass
@@ -877,10 +877,10 @@ def fetch_recent_streams_api(streamer_name, max_streams=100):
                         url_parts = animated_url.split('/')
                         for part in url_parts:
                             if f'_{streamer_name}_' in part:
-                                segments = part.split('_')
-                                if len(segments) >= 4:
-                                    extracted_vod_id = segments[2]
-                                    extracted_timestamp = segments[3]
+                                segments = part.split(f'_{streamer_name}_', 1)[1].split('_')
+                                if len(segments) >= 2:
+                                    extracted_vod_id = segments[0]
+                                    extracted_timestamp = segments[1]
                                     break
                     except Exception as e:
                         pass
