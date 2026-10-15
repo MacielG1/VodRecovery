@@ -1160,7 +1160,7 @@ def check_for_updates():
                         deps_script = os.path.join(script_dir, "install_dependencies.py")
                         if os.path.isfile(deps_script):
                             print("\nUpdating dependencies...")
-                            subprocess.check_call([sys.executable, deps_script])
+                            subprocess.check_call([sys.executable, deps_script, "--deps-only"])
                     except Exception as dep_err:
                         print(f"\nWarning: Could not update dependencies automatically: {dep_err}")
                     if get_yes_no_choice("Restart Vod Recovery now?"):
@@ -1176,11 +1176,8 @@ def check_for_updates():
                     if get_yes_no_choice("Exit Vod Recovery now?"):
                         print("\nExiting...\n")
                         sys.exit(0)
-                input("\nPress Enter to continue...")
+                print("\nReturning to main menu...")
                 return_to_main_menu()
-            else:
-                input("\nPress Enter to continue...")
-                return
         else:
             print(f"\n\033[92m\u2713 Vod Recovery is up to date ({CURRENT_VERSION}).\033[0m")
             input("\nPress Enter to continue...")

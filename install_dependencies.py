@@ -153,18 +153,20 @@ if __name__ == "__main__":
         update_pip()
 
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        
+
         requirements_file = os.path.join(script_dir, 'lib', 'requirements.txt')
         install_ffmpeg_script = os.path.join(script_dir, 'lib', 'install_ffmpeg.py')
         vod_recovery_script = os.path.join(script_dir, 'vod_recovery.py')
 
         install_requirements(requirements_file)
         subprocess.run([sys.executable, install_ffmpeg_script], check=False)
-        subprocess.run([sys.executable, vod_recovery_script], check=False)
+
+        # --deps-only: invoked by the in-app updater after a self-update.
+        if "--deps-only" not in sys.argv:
+            subprocess.run([sys.executable, vod_recovery_script], check=False)
 
     except (OSError, subprocess.SubprocessError, RuntimeError) as e:
         print(f"An error occurred: {str(e)}")
         input("\nPress Enter to continue...")
     except KeyboardInterrupt:
         pass
-
