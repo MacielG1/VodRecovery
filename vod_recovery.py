@@ -39,13 +39,17 @@ logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
 try:
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(stdout_reconfigure):
+        stdout_reconfigure(encoding='utf-8', errors='replace')
+    stderr_reconfigure = getattr(sys.stderr, "reconfigure", None)
+    if callable(stderr_reconfigure):
+        stderr_reconfigure(encoding='utf-8', errors='replace')
 except Exception:
     pass
 
 
-CURRENT_VERSION = "1.6.2"
+CURRENT_VERSION = "1.6.3"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "2160p60", "2160p30", "2160p20", "1440p60", "1440p30", "1440p20", "1080p60", "1080p30", "1080p20", "720p60", "720p30", "720p20", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30", "audio_only"]
 
@@ -388,8 +392,11 @@ def format_iso_datetime(iso_datetime: str):
                 cleaned += '+00:00' if 'UTC' in iso_datetime or 'GMT' in iso_datetime else ''
             dt = datetime.fromisoformat(cleaned)
         else:
-            # Assume UTC if no timezone info
-            dt = datetime.fromisoformat(iso_datetime + '+00:00')
+            # Strings already carrying a negative UTC offset (-05:00) parse directly
+            try:
+                dt = datetime.fromisoformat(iso_datetime)
+            except ValueError:
+                dt = datetime.fromisoformat(iso_datetime + '+00:00')
 
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
@@ -509,6 +516,7 @@ def copy_tree_overwrite(source_dir, destination_dir, preserve_relative_paths=Non
     preserve_relative_paths = preserve_relative_paths or set()
     ignore_dirs = ignore_dirs or {"__pycache__", ".git", ".github"}
     ignore_files = ignore_files or set()
+    copy_failures = []
 
     for root_dir, dir_names, file_names in os.walk(source_dir):
         dir_names[:] = [d for d in dir_names if d not in ignore_dirs]
@@ -529,9 +537,13 @@ def copy_tree_overwrite(source_dir, destination_dir, preserve_relative_paths=Non
             destination_file_path = os.path.join(destination_root, file_name)
             try:
                 os.makedirs(os.path.dirname(destination_file_path), exist_ok=True)
+                if os.path.isdir(destination_file_path):
+                    raise IsADirectoryError(f"destination path is a directory: {destination_file_path}")
                 shutil.copy2(source_file_path, destination_file_path)
-            except Exception:
-                pass
+            except Exception as copy_err:
+                copy_failures.append((relative_path.replace("\\", "/"), str(copy_err)))
+
+    return copy_failures
 
 
 def merge_settings_defaults(new_settings_path, user_settings_path):
@@ -603,11 +615,16 @@ def perform_self_update(latest_version_str=None):
         # Copy files over, preserving user settings
         current_directory = os.path.dirname(os.path.realpath(__file__))
         preserve_paths = {"config/settings.json"}
-        copy_tree_overwrite(
+        copy_failures = copy_tree_overwrite(
             source_dir=extracted_root_path,
             destination_dir=current_directory,
             preserve_relative_paths=preserve_paths,
         )
+        for failed_path, failure_reason in copy_failures:
+            print(f"\n⚠ Could not update {failed_path}: {failure_reason}")
+        if any(failed_path == "vod_recovery.py" for failed_path, _ in copy_failures):
+            print("\n✖  Core file could not be updated; aborting so the version number stays truthful.")
+            return False
 
         # Merge any new default settings keys into user's settings
         new_settings_path = os.path.join(extracted_root_path, "config", "settings.json")
@@ -889,7 +906,8 @@ def fetch_recent_streams_api(streamer_name, max_streams=100):
                 final_local_timestamp = dt_local_str
                 if extracted_timestamp:
                     try:
-                        dt_from_url = datetime.fromtimestamp(int(extracted_timestamp), timezone.utc)
+                        # Thumbnail URLs embed YYYYMMDDHHMMSS (UTC), not epoch seconds.
+                        dt_from_url = datetime.strptime(extracted_timestamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
                         if abs((dt_from_url - dt_utc).total_seconds()) < 86400:
                             final_timestamp = dt_from_url.strftime("%Y-%m-%d %H:%M:%S")
                             dt_local_from_url = dt_from_url.astimezone()
@@ -1164,8 +1182,8 @@ def check_for_updates():
                     except Exception as dep_err:
                         print(f"\nWarning: Could not update dependencies automatically: {dep_err}")
                     if get_yes_no_choice("Restart Vod Recovery now?"):
+                        script_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "vod_recovery.py")
                         try:
-                            script_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "vod_recovery.py")
                             os.execl(sys.executable, sys.executable, script_path)
                         except Exception:
                             try:
@@ -1697,11 +1715,8 @@ def parse_vod_filename_with_Brackets(m3u8_video_filename):
 
 
 def remove_chars_from_ordinal_numbers(datetime_string):
-    ordinal_numbers = ["th", "nd", "st", "rd"]
-    for exclude_string in ordinal_numbers:
-        if exclude_string in datetime_string:
-            return datetime_string.replace(datetime_string.split(" ")[1], datetime_string.split(" ")[1][:-len(exclude_string)])
-    return datetime_string
+    # Strip ordinal suffixes only when attached to a day number
+    return re.sub(r"(\d{1,2})(st|nd|rd|th)\b", r"\1", datetime_string, flags=re.IGNORECASE)
 
 
 def generate_website_links(streamer_name, video_id, tracker_url=None):
@@ -1768,7 +1783,7 @@ def website_clip_recover():
         duration_twitchtracker, prefetched_html = parse_duration_twitchtracker(tracker_url)
         # print(f"Duration: {duration_twitchtracker}")
 
-        clip_recover(streamer, video_id, int(duration_twitchtracker), tracker_url=tracker_url, prefetched_html=prefetched_html)
+        clip_recover(streamer, video_id, int(duration_twitchtracker) if duration_twitchtracker else 0, tracker_url=tracker_url, prefetched_html=prefetched_html)
     elif "sullygnome" in tracker_url:
         streamer, video_id = parse_sullygnome_url(tracker_url)
 
@@ -2017,6 +2032,8 @@ async def get_vod_urls(streamer_name, video_id, start_timestamp):
 def get_chunked_actual_resolution(m3u8_url):
     try:
         ffprobe_path = get_ffprobe_path()
+        if not ffprobe_path:
+            return None
 
         m3u8_command = [
             ffprobe_path,
@@ -2912,6 +2929,8 @@ def parse_datetime_twitchtracker(twitchtracker_url, skip_gql=False):
 
         if description_meta:
             description_content = description_meta.get("content")
+            if not isinstance(description_content, str):
+                description_content = ""
             match = re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", description_content)
             if match:
                 twitchtracker_datetime = match.group(0)
@@ -3114,8 +3133,11 @@ def return_m3u8_duration(m3u8_link):
 
 def check_if_unmuted_is_playable(m3u8_source):
     try:
+        ffprobe_path = get_ffprobe_path()
+        if not ffprobe_path:
+            return False
         cmd = [
-            get_ffprobe_path(),
+            ffprobe_path,
             '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
             '-i', m3u8_source
         ]
@@ -4241,7 +4263,7 @@ def download_m3u8_video_url_slice(m3u8_link, output_filename, video_start_time, 
             "-f", get_ffmpeg_format(get_default_video_format()),
             "-y", output_path,
         ]
-    elif downloader == "yt-dlp":
+    else:
         command = [
             get_yt_dlp_path(),
             m3u8_link,
@@ -4297,7 +4319,7 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
             "-f", get_ffmpeg_format(get_default_video_format()),
             "-y", output_path,
         ]
-    elif downloader == "yt-dlp":
+    else:
         command = [
             get_yt_dlp_path(),
             "--enable-file-urls",
@@ -5196,7 +5218,7 @@ def get_vod_or_highlight_url(vod_id):
         except (ValueError, IndexError, KeyError) as e:
             return None, None, None
 
-    return response.url, None, None
+    return (response.url if response is not None else None), None, None
 
 
 def twitch_recover(link=None):
@@ -5591,7 +5613,7 @@ def download_m3u8_cli(args):
         raise SystemExit("Error: Download failed.")
 
 
-def fetch_stream_data(channel_name: str, vod_id: str = None):
+def fetch_stream_data(channel_name: str, vod_id=None):
     try:
         if vod_id:
             query = """
@@ -5689,7 +5711,7 @@ def get_stream_datetime(url: str):
         else:
             converted_url = url
 
-        url_match = re.search(r"twitchtracker\.com/([^/\s]+)/streams(?:/(\d+))?", converted_url, re.IGNORECASE)
+        url_match = re.search(r"twitchtracker\.com/([^/\s]+)/streams(?:/(\d+))?", converted_url or "", re.IGNORECASE)
         if url_match:
             channel_name = url_match.group(1)
             vod_id = url_match.group(2) if url_match.lastindex and url_match.lastindex >= 2 else None
@@ -5723,7 +5745,10 @@ def run_vod_recover():
             if menu == 1:
                 vod_mode = print_video_mode_menu()
                 if vod_mode == 1:
-                    link, stream_datetime = website_vod_recover()
+                    recovered = website_vod_recover()
+                    if not isinstance(recovered, tuple) or len(recovered) != 2:
+                        continue
+                    link, stream_datetime = recovered
                     handle_download_menu(link, stream_datetime=stream_datetime)
                 elif vod_mode == 2:
                     manual_vod_recover()
