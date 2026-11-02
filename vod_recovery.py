@@ -24,7 +24,10 @@ from unicodedata import normalize
 import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
-from seleniumbase import SB
+try:
+    from seleniumbase import SB
+except ImportError:
+    SB = None
 import requests
 from packaging import version
 import ffmpeg_downloader as ffdl
@@ -2259,29 +2262,36 @@ _seleniumbase_version_checked = False
 def check_seleniumbase_version():
     global _seleniumbase_version_checked
     if _seleniumbase_version_checked:
-        return
+        return SB is not None
     try:
+        if SB is None:
+            print("\n✖  seleniumbase is not installed - browser search is unavailable.")
+            print("    Install it with: python -m pip install seleniumbase\n")
+            return False
         requirements_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib", "requirements.txt")
         required_version = None
+        install_spec = None
 
         with open(requirements_path, "r", encoding="utf-8") as req_file:
             for line in req_file:
-                match = re.match(r"seleniumbase==([\d.]+)", line.strip())
+                match = re.match(r"seleniumbase(==|>=)([\d.]+)", line.strip())
                 if match:
-                    required_version = match.group(1)
+                    install_spec = match.group(0)
+                    required_version = match.group(2)
                     break
         installed_version = importlib.metadata.version("seleniumbase")
         if required_version and version.parse(installed_version) < version.parse(required_version):
-            print(f"Upgrading seleniumbase from {installed_version} to {required_version}...")
+            print(f"Upgrading seleniumbase from {installed_version} to match {install_spec}...")
             try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", f"seleniumbase=={required_version}"])
-                print(f"seleniumbase upgraded to {required_version}")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", install_spec])
+                print("seleniumbase updated")
             except Exception as pip_e:
                 print(f"\033[91m[ERROR]\033[0m Could not upgrade seleniumbase: {pip_e}")
-    except Exception as e:
+    except Exception:
         pass
     finally:
         _seleniumbase_version_checked = True
+    return SB is not None
 
 
 def check_folder_write_permission():
@@ -2345,7 +2355,8 @@ def handle_selenium(url):
 
     # Method 1: Try headless mode with CDP solve_captcha (no visible window)
     try:
-        check_seleniumbase_version()
+        if not check_seleniumbase_version():
+            return None
         with SB(uc=True, headless=True) as sb:
             try:
                 sb.activate_cdp_mode(url)
@@ -2383,7 +2394,8 @@ def handle_selenium(url):
     # Method 2: Fallback to headed mode with uc_gui_click_captcha
     try:
         print("\nFalling back to headed browser mode...")
-        check_seleniumbase_version()
+        if not check_seleniumbase_version():
+            return None
         with SB(uc=True) as sb:
             try:
                 sb.activate_cdp_mode(url)
@@ -2418,7 +2430,8 @@ def selenium_get_latest_streams_from_twitchtracker(streamer_name):
         sys.exit()
     url = f"https://twitchtracker.com/{streamer_name}/streams"
     try:
-        check_seleniumbase_version()
+        if not check_seleniumbase_version():
+            return None
         with SB(uc=True) as sb:
             try:
                 sb.activate_cdp_mode(url)
@@ -2785,7 +2798,8 @@ def scrape_clip_slugs_from_tracker_page(tracker_url, prefetched_html=None):
 
     def _selenium_scrape():
         try:
-            check_seleniumbase_version()
+            if not check_seleniumbase_version():
+                return None
             with SB(uc=True, headless=True) as sb:
                 try:
                     sb.activate_cdp_mode(tracker_url)

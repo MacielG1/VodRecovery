@@ -76,6 +76,7 @@ def install_requirements(requirements_path):
             except subprocess.CalledProcessError:
                 failed_requirements.append(full_spec_for_pip)
                 print(f"\n\033[31mFailed to install {base_name_for_pip}. Please install it manually.\033[0m")
+                print(f"    Try: {sys.executable} -m pip install {base_name_for_pip}")
 
     if failed_requirements:
         failed = ", ".join(failed_requirements)
@@ -167,6 +168,7 @@ if __name__ == "__main__":
 
     except (OSError, subprocess.SubprocessError, RuntimeError) as e:
         print(f"An error occurred: {str(e)}")
+        print("Install manually with: python -m pip install -r lib/requirements.txt")
         input("\nPress Enter to continue...")
     except KeyboardInterrupt:
         pass
